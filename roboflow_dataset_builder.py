@@ -12,11 +12,11 @@ The script downloads the ENTIRE dataset from each project URL automatically:
   3. Downloads and extracts the ZIP — already has bounding-box .txt files
   4. If no export ZIP is available → falls back to search_all() + source CDN
      download + YOLOv8 auto-label
-  5. Merges multiple projects into one unified dataset
+  5. Merges multiple projects into one unified dataset with a shared CLASS_MAP
   6. Writes a clean data.yaml + preview_grid.jpg for QA
 
 Requirements:
-    pip install requests opencv-python numpy Pillow ultralytics
+    pip install requests opencv-python numpy Pillow ultralytics pyyaml
 
 Usage:
     1. Set ROBOFLOW_API_KEY  (free at app.roboflow.com → Settings → Roboflow API)
@@ -33,27 +33,26 @@ import shutil
 import time
 import zipfile
 from pathlib import Path
+from config import *
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  CONFIGURE THESE TWO THINGS
 # ══════════════════════════════════════════════════════════════════════════════
 
-ROBOFLOW_API_KEY = "xr7N7tqQDUoVAND781A0"
+ROBOFLOW_API_KEY = ROBOFLOW_API_KEY
 # Free at: https://app.roboflow.com/settings/api
 
 DATASET_URLS = [
     "https://universe.roboflow.com/aio-project/formula-1-dkxin",
     "https://universe.roboflow.com/project-ops31/formula-1-sexm0",
-    # "https://universe.roboflow.com/my-workspace-l15km/f1-car-bdlpu",
-    # Add as many project URLs as you like — they all get merged
+    "https://universe.roboflow.com/shreyas-workspace-8fcpm/datasetprep-dunei",
+    "https://universe.roboflow.com/cys-space/f1tracksegmentation-iheeq",
+    "https://universe.roboflow.com/f1-vision/f1-vision-lxwu4",
+    "https://universe.roboflow.com/nitin-fatsh/formula-btv10",
+    "https://universe.roboflow.com/nikshithas-workspace/f1-race-track-limits",
+    "https://universe.roboflow.com/yoav-fogel-yia3f/f1-car-recognition",
+    "https://universe.roboflow.com/jayanths-workspace/formula-one-car-detection",
 ]
-# Global class mapping (label → unified ID)
-CLASS_MAP = {}
-
-def get_or_create_class_id(label: str) -> int:
-    if label not in CLASS_MAP:
-        CLASS_MAP[label] = len(CLASS_MAP)
-    return CLASS_MAP[label]
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SETTINGS
@@ -72,6 +71,210 @@ MAX_IMAGES      = None   # set e.g. 500 to cap per project; None = all
 
 RF_API        = "https://api.roboflow.com"
 RF_SOURCE_CDN = "https://source.roboflow.com"
+
+# Projects known to use instance segmentation (not object detection).
+# These are exported as yolov8-seg format; polygons are auto-converted to bboxes.
+SEGMENTATION_PROJECTS = {
+    "f1tracksegmentation-iheeq",   # cys-space — label: track
+}
+
+def export_format_for(project: str) -> str:
+    """Return the correct Roboflow export format string for this project."""
+    return "yolov8-seg" if project in SEGMENTATION_PROJECTS else "yolov8"
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  UNIFIED LABEL SCHEMA
+#  ─────────────────────────────────────────────────────────────────────────────
+#  Dataset 1 (formula-1-dkxin):  labels are race incidents
+#    Non-penalty  →  class 0 "car"         (it's still a car on track)
+#    Penalty      →  class 1 "penalty_car" (car involved in a penalty incident)
+#
+#  Dataset 2 (formula-1-sexm0):  labels are team identities
+#    RedBull, Alpine, McLaren, etc.          →  classes 2-8
+#    "f1car - v3 2024-05-13 1-30pm"         →  class 0 "car" (badly named generic)
+#
+#  Any unknown label not in LABEL_REMAP  →  class 0 "car" (safe default)
+#
+#  To add more labels: extend LABEL_REMAP and UNIFIED_CLASSES below.
+# ══════════════════════════════════════════════════════════════════════════════
+
+LABEL_REMAP: dict[str, str] = {
+    # Generic car
+    "Non-penalty":                   "__drop__",
+    "f1car - v3 2024-05-13 1-30pm":  "car",
+    "f1car":                         "car",
+    # Red Bull
+    "RedBull":                       "RedBull",
+    "redbull":                       "RedBull",
+    "Red Bull":                      "RedBull",
+    "red bull":                      "RedBull",
+    "Red-Bull-Racing":               "RedBull",
+    # Mercedes
+    "Mercedes":                      "Mercedes",
+    "mercedes":                      "Mercedes",
+    # Ferrari
+    "Ferrari":                       "Ferrari",
+    "ferrari":                       "Ferrari",
+    # McLaren
+    "McLaren":                       "McLaren",
+    "Mclaren":                       "McLaren",
+    "mclaren":                       "McLaren",
+    # Alpine
+    "Alpine":                        "Alpine",
+    "alpine":                        "Alpine",
+    # Aston Martin
+    "AstonMartin":                   "AstonMartin",
+    "Aston-Martin":                   "AstonMartin",
+    "aston martin":                  "AstonMartin",
+    "aston":                         "AstonMartin",
+    "Aston Martin":                  "AstonMartin",
+    # Williams (incl. typo)
+    "Williams":                      "Williams",
+    "williams":                      "Williams",
+    "wiliams":                       "Williams",
+    # Haas
+    "haas":                          "Haas",
+    "Haas":                          "Haas",
+    # Kick Sauber (was Alfa Romeo)
+    "kick sauber":                   "KickSauber",
+    "Kick Sauber":                   "KickSauber",
+    "alfa":                          "KickSauber",
+    "Alfa":                          "KickSauber",
+    # Racing Bulls (was AlphaTauri)
+    "Racing Bulls":                  "RacingBulls",
+    "racing bulls":                  "RacingBulls",
+    "alpha":                         "RacingBulls",
+    "Alpha":                         "RacingBulls",
+    # Track surface — f1tracksegmentation-iheeq (label: Track → bbox around track)
+    "track":                         "track_surface",
+    "track_surface":                 "track_surface",
+    # Track limit labels dropped — dataset removed
+    "inside":                        "on_track",
+    "outside":                       "off_track",
+    "track_inside":                  "on_track",
+    "track_outside":                 "off_track",
+    "out of track":                  "off_track",
+    "off_track":                     "off_track",
+
+    # Race incidents & events
+    "crash":                         "crash",
+    "Crash":                         "crash",
+    "Penalty":                       "penalty_car",
+    "pitstop":                       "pitstop",
+    "Pitstop":                       "pitstop",
+    "race start":                    "race_start",
+    "Race Start":                    "race_start",
+    "marshals":                      "marshal",
+    "Marshals":                      "marshal",
+    "yellow flag situation":         "yellow_flag",
+    "Yellow Flag Situation":         "yellow_flag",
+    # Dropped labels — no bounding-box meaning
+    "maar":                          "__drop__",
+    "apex":                          "__drop__",
+    "clean racing":                  "__drop__",
+    "podium":                        "__drop__",
+    "Clean Racing":                  "__drop__",
+    "Podium":                        "__drop__",
+    "Alfa-Romeo":                    "__drop__",
+    "Alpha-Tauri":                   "__drop__",
+}
+
+UNIFIED_CLASSES: list[str] = [
+    # Car identity (0-10)
+    "car",           # 0  generic car
+    "RedBull",       # 1
+    "Mercedes",      # 2
+    "Ferrari",       # 3
+    "McLaren",       # 4
+    "Alpine",        # 5
+    "AstonMartin",   # 6
+    "Williams",      # 7
+    "Haas",          # 8
+    "KickSauber",    # 9
+    "RacingBulls",   # 10
+    # Track surface (11)
+    "track_surface", # 11  track area from f1tracksegmentation-iheeq
+    # Race incidents & events (12-18)
+    "crash",         # 12
+    "penalty_car",   # 13
+    "pitstop",       # 14
+    "race_start",    # 15
+    "marshal",       # 16
+    "yellow_flag",   # 17
+    "safety_car",    # 18  reserved
+    "off_track",
+    "on_track",
+]
+
+CLASS_MAP: dict[str, int] = {name: idx for idx, name in enumerate(UNIFIED_CLASSES)}
+
+
+# Tracks every label seen at runtime that was NOT in LABEL_REMAP
+# Printed as a report at the end so you can add them explicitly
+_UNKNOWN_LABELS: dict[str, int] = {}   # raw_label → count
+
+
+def remap_label(raw_label: str) -> str:
+    """
+    Normalise a raw dataset label to a unified class name.
+    Returns "__drop__" for labels that should be skipped entirely.
+    Falls back to "car" for any unknown label, but logs the miss
+    so it appears in the final unknown-labels report.
+    Tries exact match first, then case-insensitive match.
+    """
+    s = raw_label.strip()
+    if s in LABEL_REMAP:
+        return LABEL_REMAP[s]
+    s_lower = s.lower()
+    for k, v in LABEL_REMAP.items():
+        if k.lower() == s_lower:
+            return v
+    # Not found — log it and fall back to "car"
+    _UNKNOWN_LABELS[s] = _UNKNOWN_LABELS.get(s, 0) + 1
+    return "car"
+
+
+def print_unknown_labels_report() -> None:
+    """
+    Print a report of every label seen at runtime that was not in LABEL_REMAP.
+    These were silently mapped to 'car'. Call at end of main() to find gaps.
+    """
+    SEP = "-" * 60
+    if not _UNKNOWN_LABELS:
+        print("  No unknown labels — all labels were mapped correctly.")
+        return
+    print("\n" + SEP)
+    print(f"  WARNING: {len(_UNKNOWN_LABELS)} UNKNOWN LABEL(S) FOUND")
+    print("  These were NOT in LABEL_REMAP and silently mapped to 'car'.")
+    print("  Add them to LABEL_REMAP with the correct target class.\n")
+    print(f"  {'Raw label':<40} {'Count':>6}")
+    print("  " + "-" * 48)
+    for label, count in sorted(_UNKNOWN_LABELS.items(), key=lambda x: -x[1]):
+        print(f"  {repr(label):<40} {count:>6}")
+    print(SEP)
+    print("\n  To fix: add each line below to LABEL_REMAP in the script:")
+    for label in list(_UNKNOWN_LABELS.keys())[:5]:
+        print(f'    "{label}": "car",  # TODO: set correct class')
+    print()
+
+
+def get_class_id(raw_label: str):
+    """
+    Map a raw label string to its unified integer class ID.
+    Returns None if the label should be dropped (not written to label file).
+    """
+    unified = remap_label(raw_label)
+    if unified == "__drop__":
+        return None
+    return CLASS_MAP.get(unified, 0)
+
+
+def get_or_create_class_id(label: str) -> int:
+    """Compatibility shim for auto-label fallback — always returns a valid int."""
+    unified = remap_label(label)
+    if unified == "__drop__":
+        return 0
+    return CLASS_MAP.get(unified, 0)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  IMPORTS
@@ -102,34 +305,42 @@ except ImportError:
 #  HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def load_class_names_from_yaml(extract_dir: Path) -> dict:
+def load_class_names_from_yaml(extract_dir: Path) -> dict[int, str]:
     """
-    Reads data.yaml inside Roboflow export and returns:
-    {old_class_id: class_name}
+    Read data.yaml from a Roboflow export ZIP and return {old_class_id: label_name}.
+    Falls back to {0: "car"} if yaml is missing or unreadable.
+    Prints discovered labels so you can see exactly what the dataset contains.
     """
     yaml_files = list(extract_dir.rglob("data.yaml"))
     if not yaml_files:
-        return {}
-
+        print("    [WARN] No data.yaml found in ZIP — defaulting to {0: 'car'}")
+        return {0: "car"}
     try:
         import yaml
-    except ImportError:
-        print("  [WARN] pyyaml not installed, class names not loaded")
-        return {}
-
-    try:
-        data = yaml.safe_load(yaml_files[0].read_text())
+        data  = yaml.safe_load(yaml_files[0].read_text())
         names = data.get("names", {})
-        return {int(k): v for k, v in names.items()}
+        if isinstance(names, list):
+            # YOLO format: names is a list, index = class id
+            result = {i: n for i, n in enumerate(names)}
+        elif isinstance(names, dict):
+            result = {int(k): v for k, v in names.items()}
+        else:
+            result = {0: "car"}
+
+        # Print discovered labels so user can verify
+        print(f"    Labels in this dataset ({len(result)}):")
+        for cid, name in sorted(result.items()):
+            mapped = remap_label(name)
+            status = "→ FALLBACK 'car' (add to LABEL_REMAP!)" if (mapped == "car" and name.lower() not in ["car","f1car"]) else f"→ {mapped}"
+            print(f"      [{cid}] {name!r:<35} {status}")
+        return result
     except Exception as e:
-        print(f"  [WARN] Failed to read data.yaml: {e}")
-        return {}
+        print(f"  [WARN] Could not read data.yaml: {e}")
+    return {0: "car"}
+
 
 def parse_project_url(url: str):
-    """
-    Extract (workspace, project) from a Universe project URL.
-    Works for both project URLs and image URLs (strips /images/... suffix).
-    """
+    """Extract (workspace, project) from a Universe project or image URL."""
     m = re.search(r"universe\.roboflow\.com/([^/]+)/([^/?#]+)", url)
     if not m:
         print(f"  [WARN] Cannot parse URL: {url}")
@@ -177,22 +388,97 @@ def bytes_to_bgr(data: bytes) -> np.ndarray | None:
     return img
 
 
+def polygon_to_bbox(coords: list[float]) -> tuple[float, float, float, float] | None:
+    """
+    Convert a flat list of normalised polygon points [x1,y1,x2,y2,...]
+    to a YOLO bounding box (cx, cy, w, h).
+    Returns None if the polygon is degenerate (< 3 points or zero area).
+    """
+    if len(coords) < 6:   # need at least 3 points = 6 values
+        return None
+    try:
+        pts  = [(coords[i], coords[i+1]) for i in range(0, len(coords)-1, 2)]
+        xs   = [p[0] for p in pts]
+        ys   = [p[1] for p in pts]
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        w = x_max - x_min
+        h = y_max - y_min
+        if w < 0.001 or h < 0.001:
+            return None
+        return (
+            max(0.0, min(1.0, (x_min + x_max) / 2)),
+            max(0.0, min(1.0, (y_min + y_max) / 2)),
+            max(0.001, min(1.0, w)),
+            max(0.001, min(1.0, h)),
+        )
+    except Exception:
+        return None
+
+
+def segmentation_points_to_bbox(
+    points: list[dict], img_w: float, img_h: float
+) -> tuple[float, float, float, float] | None:
+    """
+    Convert Roboflow API segmentation points list
+    [{"x": px, "y": py}, ...] to YOLO bbox (cx, cy, w, h).
+    Points are in pixel coords; normalised by img_w / img_h.
+    """
+    try:
+        xs = [float(p["x"]) / img_w for p in points]
+        ys = [float(p["y"]) / img_h for p in points]
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        w = x_max - x_min
+        h = y_max - y_min
+        if w < 0.001 or h < 0.001:
+            return None
+        return (
+            max(0.0, min(1.0, (x_min + x_max) / 2)),
+            max(0.0, min(1.0, (y_min + y_max) / 2)),
+            max(0.001, min(1.0, w)),
+            max(0.001, min(1.0, h)),
+        )
+    except Exception:
+        return None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-#  METHOD A — Export ZIP  (best: images + YOLO labels in one download)
+#  METHOD A — Export ZIP  (images + YOLO labels in one download)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_latest_version(workspace: str, project: str) -> int | None:
-    """Return the latest version number for a project, or None."""
+def get_project_type(workspace: str, project: str) -> str:
+    """
+    Return the Roboflow project type string:
+      "object-detection" | "instance-segmentation" | "semantic-segmentation"
+      | "classification" | "unknown"
+    """
     data = api_get(f"/{workspace}/{project}")
-    print("data: ", data)
     if not data:
-        return None
+        return "unknown"
+    proj = data.get("project", {})
+    return proj.get("type", "unknown")
 
-    # FIX: correct versions source (top-level, not project["versions"])
+
+def get_latest_version(workspace: str, project: str) -> tuple[int | None, str]:
+    """
+    Return (latest_version_number, project_type).
+    version_number is None if no versions exist.
+    project_type is one of: object-detection, instance-segmentation,
+      semantic-segmentation, classification, unknown.
+    """
+    data = api_get(f"/{workspace}/{project}")
+    if not data:
+        return None, "unknown"
+
+    proj      = data.get("project", {})
+    proj_type = proj.get("type", "unknown")
+
+    # Top-level "versions" key — list of dicts with "id" like "workspace/project/3"
     versions = data.get("versions", [])
-
     if not isinstance(versions, list) or not versions:
-        return None
+        print(f"    Project type: {proj_type}  |  No versions published yet")
+        return None, proj_type
 
     best = None
     for v in versions:
@@ -203,31 +489,59 @@ def get_latest_version(workspace: str, project: str) -> int | None:
             if best is None or n > best:
                 best = n
 
-    return best
+    print(f"    Project type: {proj_type}  |  Latest version: {best}")
+    return best, proj_type
 
 
 def get_export_zip_url(workspace: str, project: str, version: int) -> str | None:
-    """Request a YOLOv8 export link. Returns URL string or None."""
-    # FIX: direct download endpoint (more reliable)
-    return f"https://api.roboflow.com/{workspace}/{project}/{version}/download?format={EXPORT_FORMAT}&api_key={ROBOFLOW_API_KEY}"
+    """
+    Request an export download link. Tries multiple formats in priority order:
+      1. Project-specific format (yolov8-seg for known segmentation projects)
+      2. yolov8 (standard detection)
+      3. yolov8-seg (instance segmentation fallback)
+    Returns the export.link URL, or None if nothing is available.
+    """
+    formats_to_try = []
+
+    # Prioritise the known format for this project
+    primary = export_format_for(project)
+    formats_to_try.append(primary)
+
+    # Add fallbacks in case the project type detection was wrong
+    for fallback in ["yolov8", "yolov8-seg", "coco"]:
+        if fallback not in formats_to_try:
+            formats_to_try.append(fallback)
+
+    for fmt in formats_to_try:
+        data = api_get(f"/{workspace}/{project}/{version}/{fmt}")
+        if not data:
+            continue
+        link = data.get("export", {}).get("link")
+        if link:
+            if fmt != primary:
+                print(f"    Note: using {fmt} export (primary {primary} had no link)")
+            return link
+
+    print(f"    No export link available for any format — project may need a version generated on Roboflow first")
+    return None
 
 
 def collect_from_zip(extract_dir: Path) -> list[tuple[Path, Path | None]]:
     """
-    Walk extracted Roboflow ZIP, return (image_path, label_path_or_None) pairs.
-    Roboflow ZIP layout:
-        train/images/*.jpg  train/labels/*.txt
-        valid/images/*.jpg  valid/labels/*.txt
-        test/images/*.jpg   test/labels/*.txt
+    Walk an extracted Roboflow ZIP, return (image_path, label_path_or_None) pairs.
+    Standard Roboflow ZIP layout:
+        train/images/*.jpg   train/labels/*.txt
+        valid/images/*.jpg   valid/labels/*.txt
+        test/images/*.jpg    test/labels/*.txt
     """
-    pairs = []
+    pairs    = []
     img_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
     for img_path in sorted(extract_dir.rglob("*")):
         if img_path.suffix.lower() not in img_exts:
             continue
         if "preview" in img_path.name.lower():
             continue
-        # Standard Roboflow layout: images/ and labels/ are siblings
+        # images/ and labels/ are siblings under the same split folder
         lbl_path = img_path.parent.parent / "labels" / (img_path.stem + ".txt")
         if not lbl_path.exists():
             lbl_path = img_path.with_suffix(".txt")
@@ -235,42 +549,69 @@ def collect_from_zip(extract_dir: Path) -> list[tuple[Path, Path | None]]:
     return pairs
 
 
-def load_yolo_label(lbl_path: Path, class_id_to_name: dict) -> list:
-    """Read YOLO labels and convert to unified class IDs."""
+def load_yolo_label(lbl_path: Path, class_id_to_name: dict[int, str]) -> list[tuple]:
+    """
+    Read a YOLO .txt label file and remap class IDs into the global CLASS_MAP.
+    Handles both:
+      - Object detection:   class_id cx cy w h
+      - Instance segmentation: class_id x1 y1 x2 y2 x3 y3 ... (polygon)
+    Segmentation polygons are converted to bounding boxes automatically.
+    Returns list of (unified_cls_id, cx, cy, w, h).
+    """
     boxes = []
     for line in lbl_path.read_text().strip().splitlines():
         pts = line.strip().split()
-        if len(pts) >= 5:
-            try:
-                old_cls = int(pts[0])
-                cx = float(pts[1])
-                cy = float(pts[2])
-                w  = float(pts[3])
-                h  = float(pts[4])
+        if len(pts) < 5:
+            continue
+        try:
+            old_cls    = int(pts[0])
+            coords     = list(map(float, pts[1:]))
+            label      = class_id_to_name.get(old_cls, f"class_{old_cls}")
+            unified_id = get_class_id(label)
+            if unified_id is None:
+                continue   # dropped label
 
-                class_name = class_id_to_name.get(old_cls, "unknown")
-                new_cls = get_or_create_class_id(class_name)
+            n = len(coords)
+            if n == 4:
+                # Standard detection: cx cy w h
+                cx, cy, w, h = coords
+            elif n >= 6 and n % 2 == 0:
+                # Segmentation polygon: x1 y1 x2 y2 ... → convert to bbox
+                result = polygon_to_bbox(coords)
+                if result is None:
+                    continue
+                cx, cy, w, h = result
+            else:
+                continue   # unrecognised format
 
-                boxes.append((new_cls, cx, cy, w, h))
-            except:
-                continue
+            if w > 0.001 and h > 0.001:
+                boxes.append((unified_id, cx, cy, w, h))
+        except (ValueError, IndexError):
+            continue
     return boxes
 
 
 def try_zip_export(workspace: str, project: str, tmp: Path) -> list | None:
     """
-    Attempt Method A (ZIP export).
+    Method A: download the full YOLOv8 export ZIP for the latest version.
     Returns list of (bgr_img, yolo_boxes, tag) or None if unavailable.
+
+    BUG FIX: original code never called records.append() inside the loop.
     """
-    version = get_latest_version(workspace, project)
+    version, proj_type = get_latest_version(workspace, project)
     if version is None:
         print(f"    No versions found for {workspace}/{project}")
         return None
 
-    print(f"    Requesting YOLOv8 export (version {version}) …")
+    # Classification projects have no bounding boxes — skip entirely
+    if proj_type == "classification":
+        print(f"    Skipping: project type is 'classification' (image-level labels only, no bounding boxes)")
+        return None
+
+    print(f"    Requesting export (version {version}, type: {proj_type}) …")
     zip_url = get_export_zip_url(workspace, project, version)
     if not zip_url:
-        print(f"    Export URL not available for version {version}")
+        print(f"    No export URL for version {version} — will try CDN fallback")
         return None
 
     print(f"    Downloading dataset ZIP …")
@@ -284,12 +625,14 @@ def try_zip_export(workspace: str, project: str, tmp: Path) -> list | None:
         with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
             zf.extractall(zip_dir)
     except zipfile.BadZipFile as e:
-        print(f"    Bad ZIP file: {e}")
+        print(f"    Bad ZIP: {e}")
         return None
+
+    class_id_to_name = load_class_names_from_yaml(zip_dir)
+    print(f"    Classes in this dataset: {class_id_to_name}")
 
     pairs = collect_from_zip(zip_dir)
     print(f"    ZIP contains {len(pairs)} images")
-    class_id_to_name = load_class_names_from_yaml(zip_dir)
     if not pairs:
         return None
 
@@ -297,36 +640,43 @@ def try_zip_export(workspace: str, project: str, tmp: Path) -> list | None:
     for img_path, lbl_path in pairs:
         if MAX_IMAGES and len(records) >= MAX_IMAGES:
             break
+
         img = cv2.imread(str(img_path))
         if img is None:
-            data = img_path.read_bytes()
-            img  = bytes_to_bgr(data)
+            img = bytes_to_bgr(img_path.read_bytes())
         if img is None:
             continue
+
         img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
+
         if lbl_path and lbl_path.exists():
             boxes = load_yolo_label(lbl_path, class_id_to_name)
             tag   = "zip_yolo_labels"
         else:
-            boxes = auto_label(img)
+            # BUG FIX: auto_label returns 4-tuples; wrap in 5-tuples with class_id
+            raw   = auto_label(img)
+            boxes = [(get_or_create_class_id("car"), cx, cy, bw, bh)
+                     for cx, cy, bw, bh in raw]
             tag   = "yolo_autolabel"
+
+        # BUG FIX: was missing — records.append was never called in original
+        records.append((img, boxes, tag))
 
     return records if records else None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  METHOD B — search_all + source CDN fallback
+#  METHOD B — search_all + source CDN  (fallback)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def search_all_images(workspace: str, project: str) -> list[dict]:
-    """Page through search API to get all image records."""
+    """Page through the search API and return all image records."""
     records = []
     offset  = 0
     limit   = 200
 
     print(f"    Fetching image list via search API …")
     while True:
-        # Try POST search (most reliable)
         try:
             r = requests.post(
                 f"{RF_API}/{workspace}/{project}/search",
@@ -342,11 +692,11 @@ def search_all_images(workspace: str, project: str) -> list[dict]:
             r.raise_for_status()
             data = r.json()
         except Exception:
-            # Fallback to GET
-            data = api_get(f"/{workspace}/{project}/search",
-                           {"offset": offset, "limit": limit,
-                            "in_dataset": "true",
-                            "fields": "id,name,owner,annotations"})
+            data = api_get(
+                f"/{workspace}/{project}/search",
+                {"offset": offset, "limit": limit,
+                 "in_dataset": "true", "fields": "id,name,owner,annotations"},
+            )
             if not data:
                 break
 
@@ -369,13 +719,13 @@ def search_all_images(workspace: str, project: str) -> list[dict]:
 
 
 def fetch_image_via_cdn(record: dict, workspace: str, project: str) -> tuple:
-    """Download image + annotations for one record. Returns (img, boxes)."""
+    """Download one image from source CDN + fetch its annotations. Returns (img, boxes)."""
     owner    = record.get("owner", workspace)
     image_id = record["id"]
 
-    # Download from official source CDN pattern
-    img_url  = f"{RF_SOURCE_CDN}/{owner}/{image_id}/original.jpg"
-    img_data = download_bytes(img_url, image_id[:16])
+    img_data = download_bytes(
+        f"{RF_SOURCE_CDN}/{owner}/{image_id}/original.jpg", image_id[:16]
+    )
     if not img_data:
         return None, []
 
@@ -383,49 +733,63 @@ def fetch_image_via_cdn(record: dict, workspace: str, project: str) -> tuple:
     if img is None:
         return None, []
 
-    # Fetch annotations
+    # Fetch annotations from image-details API
     boxes = []
-    det = api_get(f"/{workspace}/{project}/images/{image_id}")
+    det   = api_get(f"/{workspace}/{project}/images/{image_id}")
     if det:
         img_info   = det.get("image", {})
         annotation = img_info.get("annotation") or {}
         raw_boxes  = annotation.get("boxes", [])
-        # img_w      = annotation.get("width",  img.shape[1])
-        # img_h      = annotation.get("height", img.shape[0])
         try:
             img_w = float(annotation.get("width",  img.shape[1]))
             img_h = float(annotation.get("height", img.shape[0]))
-        except:
+        except (TypeError, ValueError):
             img_h, img_w = img.shape[:2]
+
         for b in raw_boxes:
-            # cx = b.get("x", 0) / img_w
-            # cy = b.get("y", 0) / img_h
-            # bw = b.get("width",  0) / img_w
-            # bh = b.get("height", 0) / img_h
-            try:
-                x  = float(b.get("x", 0))
-                y  = float(b.get("y", 0))
-                w  = float(b.get("width", 0))
-                h  = float(b.get("height", 0))
+            label      = b.get("label", "car")
+            # remap_label logs unknowns into _UNKNOWN_LABELS automatically
+            unified_id = get_class_id(label)
+            if unified_id is None:
+                continue   # dropped label
 
-                cx = x / img_w
-                cy = y / img_h
-                bw = w / img_w
-                bh = h / img_h
+            # Segmentation: API returns a "points" list [{x, y}, ...]
+            points = b.get("points")
+            if points and isinstance(points, list) and len(points) >= 3:
+                result = segmentation_points_to_bbox(points, img_w, img_h)
+                if result is None:
+                    continue
+                cx, cy, bw, bh = result
+            else:
+                # Object detection: API returns x, y, width, height (pixel, centred)
+                try:
+                    x  = float(b.get("x", 0))
+                    y  = float(b.get("y", 0))
+                    bw = float(b.get("width",  0))
+                    bh = float(b.get("height", 0))
+                except (TypeError, ValueError):
+                    continue
+                cx = x / img_w;  cy = y / img_h
+                bw = bw / img_w; bh = bh / img_h
 
-            except (ValueError, TypeError):
-                continue
-            if bw > 0.005 and bh > 0.005:
-                label = b.get("label", "unknown")
-                cls_id = get_or_create_class_id(label)
-                boxes.append((cls_id, cx, cy, bw, bh))
-                # boxes.append((max(0., min(1., cx)), max(0., min(1., cy)),
-                #                max(0.001, min(1., bw)), max(0.001, min(1., bh))))
+            if bw > 0.001 and bh > 0.001:
+                boxes.append((
+                    unified_id,
+                    max(0., min(1., cx)), max(0., min(1., cy)),
+                    max(0.001, min(1., bw)), max(0.001, min(1., bh)),
+                ))
+
     return img, boxes
 
 
 def try_cdn_fallback(workspace: str, project: str) -> list:
-    """Method B: search_all + CDN download + annotation API."""
+    """Method B: search_all + CDN download + annotation API per image."""
+    # Check project type first — skip classification (no bboxes)
+    proj_type = get_project_type(workspace, project)
+    if proj_type == "classification":
+        print(f"    Skipping CDN fallback: project type is 'classification' (no bounding boxes)")
+        return []
+
     image_records = search_all_images(workspace, project)
     if not image_records:
         return []
@@ -438,7 +802,10 @@ def try_cdn_fallback(workspace: str, project: str) -> list:
             continue
         img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
         if not boxes:
-            boxes = auto_label(img)
+            # BUG FIX: auto_label returns 4-tuples; convert to 5-tuples
+            raw   = auto_label(img)
+            boxes = [(get_or_create_class_id("car"), cx, cy, bw, bh)
+                     for cx, cy, bw, bh in raw]
             tag   = "yolo_autolabel"
         else:
             tag = "api_annotations"
@@ -450,12 +817,14 @@ def try_cdn_fallback(workspace: str, project: str) -> list:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  YOLO AUTO-LABEL
+#  YOLO AUTO-LABEL FALLBACK
+#  NOTE: returns 4-tuples (cx, cy, bw, bh) — callers must add the class_id
 # ══════════════════════════════════════════════════════════════════════════════
 
 _yolo_model = None
 
-def auto_label(image: np.ndarray) -> list:
+def auto_label(image: np.ndarray) -> list[tuple]:
+    """Run YOLOv8n on image; returns 4-tuples (cx, cy, bw, bh). Callers add class_id."""
     global _yolo_model
     if _yolo_model is None:
         try:
@@ -463,7 +832,9 @@ def auto_label(image: np.ndarray) -> list:
             print("\n  Loading YOLOv8n for auto-label fallback …")
             _yolo_model = YOLO("yolov8n.pt")
         except ImportError:
+            print("  [WARN] pip install ultralytics  for auto-label")
             return []
+
     results = _yolo_model(image, conf=CONF_THRESHOLD, classes=[2, 7], verbose=False)
     H, W    = image.shape[:2]
     boxes   = []
@@ -473,10 +844,10 @@ def auto_label(image: np.ndarray) -> list:
         for box in r.boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             boxes.append((
-                max(0., min(1., ((x1+x2)/2)/W)),
-                max(0., min(1., ((y1+y2)/2)/H)),
-                max(0.001, min(1., (x2-x1)/W)),
-                max(0.001, min(1., (y2-y1)/H)),
+                max(0., min(1., ((x1+x2)/2) / W)),
+                max(0., min(1., ((y1+y2)/2) / H)),
+                max(0.001, min(1., (x2-x1) / W)),
+                max(0.001, min(1., (y2-y1) / H)),
             ))
     return boxes
 
@@ -501,33 +872,43 @@ def assign_split(idx: int, total: int) -> str:
     return "test"
 
 
-def write_label(path: Path, boxes: list) -> None:
+def write_label(path: Path, boxes: list[tuple]) -> None:
+    """Write YOLO label file. Each box is (class_id, cx, cy, w, h)."""
     path.write_text(
         "\n".join(
-            f"{cls} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}"
+            f"{int(cls)} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}"
             for cls, cx, cy, bw, bh in boxes
         )
     )
 
 
-def write_yaml(out: Path, sources: list) -> None:
-    src_lines = "\n".join(f"#   {s}" for s in sources)
-
-    names_block = "\n".join(
-        f"  {i}: {name}" for name, i in CLASS_MAP.items()
-    )
+def write_yaml(out: Path, sources: list[str]) -> None:
+    """Write data.yaml using the fixed UNIFIED_CLASSES schema."""
+    src_lines   = "\n".join(f"#   {s}" for s in sources)
+    names_block = "\n".join(f"  {idx}: {name}" for idx, name in enumerate(UNIFIED_CLASSES))
 
     (out/"data.yaml").write_text(f"""\
 # F1 Car Detection — Roboflow Universe Dataset
 # Sources:
 {src_lines}
+#
+# Class schema:
+#   0  car          — generic car on track  (Dataset 1: Non-penalty + unknown labels)
+#   1  penalty_car  — car under a penalty   (Dataset 1: Penalty)
+#   2  RedBull      — Red Bull car          (Dataset 2)
+#   3  Alpine       — Alpine car            (Dataset 2)
+#   4  McLaren      — McLaren car           (Dataset 2)
+#   5  Mercedes     — Mercedes car          (Dataset 2)
+#   6  AstonMartin  — Aston Martin car      (Dataset 2)
+#   7  Ferrari      — Ferrari car           (Dataset 2)
+#   8  Williams     — Williams car          (Dataset 2)
 
 path: {out.resolve()}
 train: train/images
 val:   val/images
 test:  test/images
 
-nc: {len(CLASS_MAP)}
+nc: {len(UNIFIED_CLASSES)}
 names:
 {names_block}
 """)
@@ -539,9 +920,14 @@ def save_preview(out: Path, n: int = 16, cols: int = 4, cell: int = 160) -> None
     images = sorted(idir.glob("*.jpg"))[:n]
     if not images:
         return
+
+    # Build id→name lookup for label rendering
+    id_to_name = {cid: name for name, cid in CLASS_MAP.items()}
+
     rows = math.ceil(len(images)/cols)
     grid = np.zeros((rows*cell, cols*cell, 3), dtype=np.uint8)
     grid[:] = 25
+
     for i, ip in enumerate(images):
         img = cv2.imread(str(ip))
         if img is None:
@@ -552,16 +938,19 @@ def save_preview(out: Path, n: int = 16, cols: int = 4, cell: int = 160) -> None
             for ln in lp.read_text().strip().splitlines():
                 pts = ln.strip().split()
                 if len(pts) >= 5:
-                    _, cx, cy, bw, bh = map(float, pts[:5])
+                    cls_id = int(pts[0])
+                    cx, cy, bw, bh = map(float, pts[1:5])
                     x1 = max(0, int((cx-bw/2)*cell))
                     y1 = max(0, int((cy-bh/2)*cell))
                     x2 = min(cell-1, int((cx+bw/2)*cell))
                     y2 = min(cell-1, int((cy+bh/2)*cell))
+                    label = id_to_name.get(cls_id, str(cls_id))
                     cv2.rectangle(img, (x1,y1), (x2,y2), (0,255,0), 2)
-                    cv2.putText(img, "car", (x1+2, max(y1-4,10)),
+                    cv2.putText(img, label, (x1+2, max(y1-4,10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0,255,0), 1, cv2.LINE_AA)
         r, c = divmod(i, cols)
         grid[r*cell:(r+1)*cell, c*cell:(c+1)*cell] = img
+
     path = out/"preview_grid.jpg"
     cv2.imwrite(str(path), grid, [cv2.IMWRITE_JPEG_QUALITY, 94])
     print(f"\n  Preview grid → {path}")
@@ -604,14 +993,14 @@ ERROR: No Roboflow API key.
         workspace, project = parsed
         sources.append(f"universe.roboflow.com/{workspace}/{project}")
         slug = f"{workspace}/{project}"
-        print(f"\n── {slug} ──────────────────────────────────────")
+        print(f"\n── {slug} ────────────────────────────────────────")
 
-        # Method A: ZIP export
+        # Method A: ZIP export (preferred — labels already included)
         records = try_zip_export(workspace, project, tmp)
 
-        # Method B: CDN fallback
+        # Method B: CDN + annotation API fallback
         if not records:
-            print(f"  Falling back to CDN download …")
+            print(f"  ZIP not available — falling back to CDN download …")
             records = try_cdn_fallback(workspace, project)
 
         if not records:
@@ -632,7 +1021,7 @@ ERROR: No Roboflow API key.
     dirs          = setup_dirs(out)
     counts        = {"train": 0, "val": 0, "test": 0}
     n_boxes_total = 0
-    tag_counts    = {}
+    tag_counts: dict[str, int] = {}
     total         = len(all_records)
 
     print(f"\n  Writing {total} images …")
@@ -652,28 +1041,31 @@ ERROR: No Roboflow API key.
 
     elapsed = time.time() - t0
     report = (
-        f"Roboflow Universe Dataset — Build Report\n"
-        f"==========================================\n"
+        "Roboflow Universe Dataset — Build Report\n"
+        "==========================================\n"
         f"Generated  : {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"Output     : {out.resolve()}\n\n"
-        f"Sources\n" +
+        "Sources\n" +
         "\n".join(f"  {s}" for s in sources) +
+        "\n\nUnified class schema\n" +
+        "\n".join(f"  {idx}: {name}" for idx, name in enumerate(UNIFIED_CLASSES)) +
         f"\n\nImage counts\n"
         f"  Train / Val / Test : {counts['train']} / {counts['val']} / {counts['test']}\n"
         f"  Total              : {total}\n\n"
         f"Bounding boxes\n"
         f"  Total : {n_boxes_total}\n"
-        f"  Avg   : {n_boxes_total / max(total,1):.1f} per image\n\n"
-        f"Annotation sources\n" +
-        "\n".join(f"  {k:<28} {v} images" for k, v in tag_counts.items()) +
+        f"  Avg   : {n_boxes_total / max(total, 1):.1f} per image\n\n"
+        "Annotation sources\n" +
+        "\n".join(f"  {k:<30} {v} images" for k, v in tag_counts.items()) +
         f"\n\nBuild time : {elapsed:.1f}s\n\n"
-        f"Train:\n"
-        f"  yolo train model=yolov8s.pt \\\n"
+        "Train:\n"
+        "  yolo train model=yolov8s.pt \\\n"
         f"             data={out.resolve()}/data.yaml \\\n"
         f"             epochs=100 batch=16 imgsz={IMG_SIZE}\n"
     )
     (out/"dataset_report.txt").write_text(report)
     print(f"\n{report}")
+    print_unknown_labels_report()
 
 
 if __name__ == "__main__":
