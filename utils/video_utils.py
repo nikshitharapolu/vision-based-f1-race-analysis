@@ -95,10 +95,10 @@ def save_video(
     writer.release()
     print(f"  [Video] Saved {len(frames)} frames → {out_path}")
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 #  ANNOTATION RENDERER
 # ══════════════════════════════════════════════════════════════════════════════
+# Detect movement direction once for the whole video (more stable)
 
 def draw_annotations(
     frames:          list[np.ndarray],
@@ -109,6 +109,7 @@ def draw_annotations(
     commentary_lines:  list[tuple[int, int, str]],
     events,
     show_minimap:    bool = False,
+    race_direction:  str  = "auto",
 ) -> list[np.ndarray]:
     """
     Full annotation pipeline — returns annotated copies of all frames.
@@ -130,8 +131,12 @@ def draw_annotations(
     # Each entry: {frame_idx, text, timestamp, color}
     chat_history: list[dict] = []
     fps_est = 30.0   # used for timestamp display only
+    COMMENTARY_DELAY_FRAMES = 15   # show commentary 0.5s after event detected
+
 
     for (f_start, f_end, text) in sorted(commentary_lines, key=lambda x: x[0]):
+        # Delay commentary slightly so viewer sees event before reading about it
+        display_start = f_start + COMMENTARY_DELAY_FRAMES
         secs = int(f_start / fps_est)
         ts   = f"{secs // 60}:{secs % 60:02d}"
         # Pick colour based on keywords in the text
@@ -151,12 +156,17 @@ def draw_annotations(
             col = EVENT_COLORS["RACE_START"]
 
         chat_history.append({
-            "frame_start": f_start,
+            "frame_start": display_start,
             "text":        text,
             "timestamp":   ts,
             "color":       col,
         })
 
+    # Detect movement direction once from middle of video (stable)
+    mid_frame = len(frames) // 2
+    direction = _detect_movement_direction(car_tracks, mid_frame, lookback=120)
+    print(f"  [Renderer] Detected movement direction: {direction}")
+   
     output = []
     n      = len(frames)
 
@@ -171,7 +181,7 @@ def draw_annotations(
         if show_minimap and mini_track is not None and hasattr(mini_track, "get_positions_at_frame"):
             positions = mini_track.get_positions_at_frame(fi)
             out = mini_track.draw_mini_map(out, positions, car_speeds, fi)
-
+ 
         # 3. Leaderboard strip
         lb = _nearest(leaderboard_state, fi)
         if lb:
@@ -191,17 +201,25 @@ def draw_annotations(
         sidebar_w   = 300
         frame_h     = out.shape[0]
 
+        # Detect direction locally per frame — handles camera angle changes
+        if race_direction == "auto":
+            direction = _detect_movement_direction(car_tracks, fi, lookback=15)
+        else:
+            direction = race_direction
+
         top3_panel  = _build_top3_panel(
             car_tracks  = car_tracks,
             car_speeds  = car_speeds,
             frame_idx   = fi,
             width       = sidebar_w,
             leaderboard = leaderboard_state,
+            direction   = direction,
         )
         chat_panel  = _build_chat_sidebar(
             visible_msgs,
             height = frame_h - top3_panel.shape[0],
             width  = sidebar_w,
+            max_lines=10,
         )
         sidebar     = np.vstack([top3_panel, chat_panel])
         combined    = np.hstack([out, sidebar])
@@ -219,6 +237,9 @@ def _draw_car_boxes(
 ) -> np.ndarray:
     if not _CV2:
         return frame
+
+    frame_labels = []   # track label positions this frame to avoid overlaps
+
     for tid, det in frame_dict.items():
         x1, y1, x2, y2 = (int(v) for v in det["bbox"])
         cls_id   = det.get("class_id", 0)
@@ -230,8 +251,9 @@ def _draw_car_boxes(
 
         spd_list = car_speeds.get(tid, [])
         spd      = spd_list[fi] if fi < len(spd_list) else 0.0
-        label    = f"#{tid} {_name(cls_id)} {spd:.0f}k"
-        _label_pill(frame, label, x1, y1, col)
+        cls_name = _name(cls_id) if cls_id > 0 else f"#{tid}"
+        label    = f"{cls_id} {cls_name} {spd:.0f}km/h"
+        _label_pill(frame, label, x1, y1, col, frame_labels)
 
     return frame
 
@@ -267,36 +289,30 @@ def _draw_commentary(frame: np.ndarray, text: str) -> np.ndarray:
 def _detect_movement_direction(
     car_tracks: list[dict[int, dict]],
     frame_idx:  int,
-    lookback:   int = 30,
+    lookback:   int = 15,   # short window = responds to camera cuts
 ) -> str:
     """
-    Detect which direction cars are moving on screen by comparing
-    centroid positions over the last `lookback` frames.
-
-    Returns:
-        "left"   — cars moving right to left   → rank by X descending
-        "right"  — cars moving left to right   → rank by X ascending
-        "up"     — cars moving bottom to top   → rank by Y ascending
-        "down"   — cars moving top to bottom   → rank by Y descending
+    Detect dominant movement direction around frame_idx using a short
+    local window. Called per-frame so camera angle changes are handled.
     """
-    f_now  = frame_idx
-    f_prev = max(0, frame_idx - lookback)
+    f_now  = min(frame_idx, len(car_tracks) - 1)
+    f_prev = max(0, f_now - lookback)
 
     if f_prev == f_now:
-        return "up"   # default
+        return "right"
 
-    now_dict  = car_tracks[f_now]  if f_now  < len(car_tracks) else {}
-    prev_dict = car_tracks[f_prev] if f_prev < len(car_tracks) else {}
+    now_dict  = car_tracks[f_now]
+    prev_dict = car_tracks[f_prev]
+    common    = set(now_dict.keys()) & set(prev_dict.keys())
 
-    common_ids = set(now_dict.keys()) & set(prev_dict.keys())
-    if not common_ids:
-        return "up"
+    if not common:
+        return "right"
 
     dx_total = 0.0
     dy_total = 0.0
     count    = 0
 
-    for tid in common_ids:
+    for tid in common:
         b_now  = now_dict[tid]["bbox"]
         b_prev = prev_dict[tid]["bbox"]
         cx_now  = (b_now[0]  + b_now[2])  / 2
@@ -308,17 +324,19 @@ def _detect_movement_direction(
         count    += 1
 
     if count == 0:
-        return "up"
+        return "right"
 
     dx_avg = dx_total / count
     dy_avg = dy_total / count
 
-    # Dominant axis
+    # Ignore tiny jitter — need meaningful movement
+    if abs(dx_avg) < 0.3 and abs(dy_avg) < 0.3:
+        return "right"
+
     if abs(dx_avg) > abs(dy_avg):
         return "left" if dx_avg < 0 else "right"
     else:
         return "up" if dy_avg < 0 else "down"
-
 
 def _rank_key(bbox: list[float], direction: str) -> float:
     """
@@ -349,6 +367,7 @@ def _build_top3_panel(
     frame_idx:   int,
     width:       int = 300,
     leaderboard: dict = None,
+    direction:   str = "right",
 ) -> np.ndarray:
     """
     Build a top-3 leaderboard panel showing current race positions.
@@ -399,7 +418,6 @@ def _build_top3_panel(
     # Fallback: rank by position of bounding box centroids
     # Auto-detect movement direction from recent frames
     if not top3_entries and frame_dict:
-        direction = _detect_movement_direction(car_tracks, frame_idx)
         ranked = sorted(
             frame_dict.items(),
             key=lambda kv: _rank_key(kv[1]["bbox"], direction)
@@ -476,11 +494,12 @@ def _build_chat_sidebar(
     panel[:]  = (18, 18, 18)   # dark background
 
     font      = cv2.FONT_HERSHEY_SIMPLEX
-    font_sm   = 0.36
-    font_msg  = 0.40
+    font_sm   = 0.34
+    font_msg  = 0.38
     thick     = 1
     pad       = 8
-    line_h    = 40
+    line_h    = 52
+    max_chars = 24
 
     # ── Header ────────────────────────────────────────────────────────────────
     cv2.rectangle(panel, (0, 0), (width, 36), (30, 30, 30), -1)
@@ -503,7 +522,7 @@ def _build_chat_sidebar(
     for i, msg in enumerate(visible):
         y_top = y_start + i * line_h
 
-        if y_top + line_h > height - 10:
+        if y_top + line_h > height - 24:
             break
 
         col  = msg.get("color", (130, 130, 130))
@@ -511,18 +530,19 @@ def _build_chat_sidebar(
         text = msg.get("text", "")
 
         # Timestamp + coloured dot
-        cv2.putText(panel, ts, (pad, y_top + 13),
+        cv2.putText(panel, ts, (pad, y_top + 12),
                     font, font_sm, (90, 90, 90), 1, cv2.LINE_AA)
-        cv2.circle(panel, (pad + 34, y_top + 10), 4, col, -1)
+        cv2.circle(panel, (pad + 32, y_top + 9), 4, col, -1)
 
         # Word-wrap text into the sidebar width
-        max_chars = 26
+        max_chars = 24
         words     = text.split()
         lines     = []
         current   = ""
         for word in words:
-            if len(current) + len(word) + 1 <= max_chars:
-                current = (current + " " + word).strip()
+            test=(current+" "+word).strip()
+            if len(test) <= max_chars:
+                current = test
             else:
                 if current:
                     lines.append(current)
@@ -530,19 +550,19 @@ def _build_chat_sidebar(
         if current:
             lines.append(current)
 
-        for li, line in enumerate(lines[:2]):
+        for li, line in enumerate(lines[:3]):
             cv2.putText(panel, line,
-                        (pad + 44, y_top + 13 + li * 16),
+                        (pad + 42, y_top + 12 + li * 15),
                         font, font_msg, (225, 225, 225), thick, cv2.LINE_AA)
 
         # Separator
         cv2.line(panel, (pad, y_top + line_h - 3),
                  (width - pad, y_top + line_h - 3),
-                 (38, 38, 38), 1)
+                 (40, 40, 40), 1)
 
     # ── Bottom gradient bar ───────────────────────────────────────────────────
-    cv2.rectangle(panel, (0, height - 20), (width, height), (25, 25, 25), -1)
-    cv2.putText(panel, f"{len(messages)} events", (pad, height - 6),
+    cv2.rectangle(panel, (0, height - 22), (width, height), (25, 25, 25), -1)
+    cv2.putText(panel, f"{len(messages)} events", (pad, height - 7),
                 font, 0.32, (70, 70, 70), 1, cv2.LINE_AA)
 
     return panel
@@ -555,17 +575,58 @@ def _draw_event_banner(
     if not _CV2:
         return frame
     from analysis.race_stats import EventType
-    banner_events = {EventType.CRASH, EventType.YELLOW_FLAG}
-    for ev in events:
-        if ev.type in banner_events and abs(ev.frame_idx - fi) <= 90:
-            h, w = frame.shape[:2]
-            col  = (0,0,255) if ev.type == EventType.CRASH else (0,220,255)
-            cv2.rectangle(frame, (0, h//2 - 20), (w, h//2 + 20), col, -1)
-            label = "CRASH — SAFETY CAR" if ev.type == EventType.CRASH else "YELLOW FLAG"
-            tw, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 0.9, 2)[0]
-            cv2.putText(frame, label, ((w-tw)//2, h//2+8),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.9, (255,255,255), 2, cv2.LINE_AA)
-            break
+
+    BANNER_CFG = {
+        EventType.CRASH:       {"col": (0,0,200),   "label": "⚠ CRASH",       "sub": "Safety car may be deployed", "duration": 150},
+        EventType.YELLOW_FLAG: {"col": (0,180,230),  "label": "⚠ YELLOW FLAG", "sub": "No overtaking — slow down",  "duration": 120},
+    }
+
+    for ev in sorted(events, key=lambda e: e.frame_idx, reverse=True):
+        cfg = BANNER_CFG.get(ev.type)
+        if cfg is None:
+            continue
+
+        # Only show AFTER event occurs, never before
+        elapsed = fi - ev.frame_idx
+        if not (0 <= elapsed <= cfg["duration"]):
+            continue
+
+        h, w   = frame.shape[:2]
+        col    = cfg["col"]
+        label  = cfg["label"]
+        sub    = cfg["sub"]
+
+        # Fade out gradually in last 30 frames
+        alpha = 1.0
+        if elapsed > cfg["duration"] - 30:
+            alpha = (cfg["duration"] - elapsed) / 30.0
+
+        # Banner background
+        overlay = frame.copy()
+        banner_h = 52
+        y0 = h - banner_h - 50   # bottom of frame, above chat
+        cv2.rectangle(overlay, (0, y0), (w - 300, y0 + banner_h), col, -1)
+        cv2.addWeighted(overlay, alpha * 0.85, frame, 1 - alpha * 0.85, 0, frame)
+
+        # Left coloured stripe
+        cv2.rectangle(frame, (0, y0), (8, y0 + banner_h), (255,255,255), -1)
+
+        # Main label
+        cv2.putText(frame, label, (20, y0 + 30),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.85,
+                    (255,255,255), 2, cv2.LINE_AA)
+
+        # Sub label
+        cv2.putText(frame, sub, (20, y0 + 46),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                    (220,220,220), 1, cv2.LINE_AA)
+
+        # Progress bar showing how long banner has been shown
+        bar_w = int((w - 308) * (1 - elapsed / cfg["duration"]))
+        cv2.rectangle(frame, (0, y0 + banner_h - 3),
+                      (bar_w, y0 + banner_h), (255,255,255), -1)
+        break
+
     return frame
 
 
@@ -576,17 +637,50 @@ def _draw_frame_counter(frame: np.ndarray, fi: int, total: int) -> None:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160,160,160), 1)
 
 
-def _label_pill(frame, text, x1, y1, col):
-    font   = cv2.FONT_HERSHEY_SIMPLEX
-    fscale = 0.4
-    thick  = 1
-    tw, th = cv2.getTextSize(text, font, fscale, thick)[0]
-    pad    = 3
-    lx1, ly1 = x1, max(y1 - th - pad*2 - 2, 0)
-    lx2, ly2 = x1 + tw + pad*2, ly1 + th + pad*2 + 2
-    cv2.rectangle(frame, (lx1, ly1), (lx2, ly2), (0,0,0), -1)
-    cv2.putText(frame, text, (lx1+pad, ly2-pad-2), font, fscale,
-                col, thick, cv2.LINE_AA)
+# Track label positions per frame to avoid overlaps
+_label_positions: list[tuple[int,int,int,int]] = []
+
+def _label_pill(frame, text, x1, y1, col, frame_labels=None):
+    """Draw label pill, shifting position if it overlaps with existing labels."""
+    font       = cv2.FONT_HERSHEY_SIMPLEX
+    fscale     = 0.4
+    thick      = 1
+    tw, th     = cv2.getTextSize(text, font, fscale, thick)[0]
+    pad        = 3
+    pill_w     = tw + pad * 2
+    pill_h     = th + pad * 2 + 2
+
+    # Default position: above box
+    lx = x1
+    ly = max(y1 - pill_h, 0)
+
+    # Check for overlaps and shift down if needed
+    if frame_labels is not None:
+        attempts = 0
+        while attempts < 5:
+            overlap = False
+            for (ox, oy, ow, oh) in frame_labels:
+                # Check if current position overlaps with existing label
+                if not (lx + pill_w < ox or lx > ox + ow or
+                        ly + pill_h < oy or ly > oy + oh):
+                    overlap = True
+                    break
+            if not overlap:
+                break
+            # Shift down by pill height + 2px margin
+            ly += pill_h + 2
+            # If gone below box bottom, shift right instead
+            if ly > y1 + 60:
+                ly = max(y1 - pill_h, 0)
+                lx += pill_w + 4
+            attempts += 1
+
+        frame_labels.append((lx, ly, pill_w, pill_h))
+
+    # Draw pill background
+    cv2.rectangle(frame, (lx, ly), (lx + pill_w, ly + pill_h), (0,0,0), -1)
+    cv2.putText(frame, text, (lx + pad, ly + pill_h - pad - 2),
+                font, fscale, col, thick, cv2.LINE_AA)
 
 
 def _nearest(d: dict, fi: int):

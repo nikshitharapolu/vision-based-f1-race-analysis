@@ -63,7 +63,7 @@ def parse_args():
     p.add_argument("--broadcast", default="default",
                    choices=["sky_f1","f1tv","default"],
                    help="Broadcast layout for OCR region detection")
-    p.add_argument("--conf",     type=float, default=0.25,
+    p.add_argument("--conf",     type=float, default=0.10,
                    help="YOLO detection confidence threshold")
     p.add_argument("--device",   default="",
                    help="'' = auto, 'cpu', '0' …")
@@ -90,6 +90,12 @@ def parse_args():
                    help="Text-to-speech backend (default: gtts)")
     p.add_argument("--hold-frames", type=int, default=120,
                    help="How long each commentary line stays on screen in frames (default: 120 = 4s at 30fps)")
+    p.add_argument("--race-direction", default="auto",
+               choices=["auto", "left", "right", "up", "down"],
+               help="Direction cars travel on screen (default: auto-detect). "
+                    "Set manually if auto-detect is wrong: "
+                    "left=cars move right-to-left, right=left-to-right, "
+                    "up=bottom-to-top, down=top-to-bottom")
     return p.parse_args()
 
 
@@ -129,6 +135,29 @@ def main():
     n_ids = len({tid for fd in car_tracks for tid in fd})
     print(f"      {n_ids} unique car IDs tracked")
 
+    # Extract event-class detections — skip interpolated frames (conf=0.0)
+    print("  Extracting event detections from tracks …")
+    EVENT_CLASS_IDS = {
+        12: "crash", 13: "penalty_car", 14: "pitstop",
+        15: "race_start", 16: "marshal", 17: "yellow_flag", 18: "safety_car"
+    }
+    yolo_events = []
+    for fi, frame_dict in enumerate(car_tracks):
+        for tid, det in frame_dict.items():
+            cls_id = det.get("class_id", 0)
+            conf   = det.get("conf", 0.0)
+            if cls_id in EVENT_CLASS_IDS and conf > 0.0:  # skip interpolated
+                yolo_events.append({
+                    "frame_idx":  fi,
+                    "class_id":   cls_id,
+                    "class_name": EVENT_CLASS_IDS[cls_id],
+                    "track_id":   tid,
+                    "conf":       conf,
+                    "bbox":       det.get("bbox", []),
+                })
+    print(f"  Found {len(yolo_events)} event detections "
+          f"({sum(1 for e in yolo_events if e['class_name']=='crash')} crash)")
+
 
     # ── 4a. Track keypoints + homography ──────────────────────────────────────
     kp_frames = {}
@@ -166,6 +195,7 @@ def main():
         leaderboard    = leaderboard_state,
         fps            = fps,
         mini_track     = mini_track,
+        detected_events  = yolo_events,  
     )
     car_speeds     = stats.compute_speeds()
     race_events    = stats.detect_events()
@@ -180,10 +210,16 @@ def main():
     penalty_events = pen_det.detect_all()
     print(f"       {len(race_events)} race events  |  {len(penalty_events)} penalty events")
 
+
     # ── 6. Commentary ──────────────────────────────────────────────────────────
     print("[6/7] Generating commentary …")
-    cgen             = CommentaryGenerator()
-    commentary_lines = cgen.generate(race_events, penalty_events, leaderboard_state)
+    cgen             = CommentaryGenerator(hold_frames=args.hold_frames)
+    commentary_lines = cgen.generate(
+        race_events,
+        penalty_events,
+        leaderboard_state,
+        car_tracks=car_tracks,
+    )
     print(f"       {len(commentary_lines)} commentary lines")
 
     # ── 7. Visualise ──────────────────────────────────────────────────────────
@@ -198,6 +234,7 @@ def main():
         commentary_lines = commentary_lines,
         events           = all_events,
         show_minimap     = args.show_minimap,
+        race_direction    = args.race_direction,
     )
     save_video(out_frames, args.output, fps=fps)
 

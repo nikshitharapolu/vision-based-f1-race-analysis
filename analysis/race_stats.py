@@ -222,23 +222,111 @@ class RaceStats:
         return events
 
     def _detect_yolo_events(self) -> list[RaceEvent]:
-        """Convert YOLO class detections (crash, yellow_flag, etc.) to RaceEvents."""
+        """
+        Convert YOLO event detections to RaceEvents.
+        Requires detection to appear in multiple consecutive frames
+        before firing — eliminates single-frame false positives and
+        early triggering from motion blur.
+        """
         events = []
+
         CLASS_TO_EVENT = {
+            12: EventType.CRASH,
+            15: EventType.RACE_START,
+            17: EventType.YELLOW_FLAG,
             "crash":       EventType.CRASH,
             "yellow_flag": EventType.YELLOW_FLAG,
             "race_start":  EventType.RACE_START,
         }
+
+        # Minimum consecutive frames needed to confirm event
+        CONFIRM_FRAMES = {
+            EventType.CRASH:       5,   # crash must appear in 5 consecutive frames
+            EventType.YELLOW_FLAG: 4,
+            EventType.RACE_START:  3,
+        }
+
+        COOLDOWN = {
+            EventType.CRASH:       90,
+            EventType.YELLOW_FLAG: 120,
+            EventType.RACE_START:  300,
+        }
+
+        # Group detections by frame
+        by_frame: dict[int, list[dict]] = {}
         for det in self.yolo_events:
-            cls_name = det.get("class_name","")
-            ev_type  = CLASS_TO_EVENT.get(cls_name)
-            if ev_type:
-                events.append(RaceEvent(
-                    type      = ev_type,
-                    frame_idx = det.get("frame_idx", 0),
-                    car_ids   = det.get("car_ids", []),
-                    details   = {"conf": det.get("conf", 0.0)},
-                ))
+            fi = det.get("frame_idx", 0)
+            by_frame.setdefault(fi, []).append(det)
+
+        last_seen: dict[EventType, int] = {}
+        # Track consecutive detection counts per event type
+        streak: dict[EventType, int] = {}
+        streak_start: dict[EventType, int] = {}
+
+        for fi in sorted(by_frame.keys()):
+            dets = by_frame[fi]
+            seen_types = set()
+
+            for det in dets:
+                cls_id   = det.get("class_id", -1)
+                cls_name = det.get("class_name", "")
+                conf     = det.get("conf", 0.0)
+
+                ev_type = CLASS_TO_EVENT.get(cls_id) or CLASS_TO_EVENT.get(cls_name)
+                if ev_type is None:
+                    continue
+
+                seen_types.add(ev_type)
+
+                # Build consecutive streak
+                if ev_type not in streak:
+                    streak[ev_type]       = 1
+                    streak_start[ev_type] = fi
+                else:
+                    # Check if this is consecutive (within 3 frames gap)
+                    last_fi = streak_start.get(ev_type, 0) + streak.get(ev_type, 0)
+                    if fi <= last_fi + 3:
+                        streak[ev_type] += 1
+                    else:
+                        # Reset streak
+                        streak[ev_type]       = 1
+                        streak_start[ev_type] = fi
+
+                confirm_needed = CONFIRM_FRAMES.get(ev_type, 3)
+                cooldown       = COOLDOWN.get(ev_type, 90)
+
+                # Fire event only when streak reaches confirmation threshold
+                if (streak[ev_type] >= confirm_needed and
+                        fi - last_seen.get(ev_type, -9999) >= cooldown):
+
+                    # Use the START of the streak as the event frame
+                    # so the banner appears when crash first became visible
+                    event_fi = streak_start[ev_type]
+
+                    last_seen[ev_type]  = fi
+                    streak[ev_type]     = 0   # reset after firing
+
+                    events.append(RaceEvent(
+                        type      = ev_type,
+                        frame_idx = event_fi,
+                        car_ids   = [det.get("track_id", -1)],
+                        details   = {
+                            "conf":  round(conf, 3),
+                            "class": cls_name or str(cls_id),
+                        },
+                    ))
+
+            # Reset streaks for event types not seen this frame
+            for ev_type in list(streak.keys()):
+                if ev_type not in seen_types:
+                    # Allow small gaps (3 frames) before resetting streak
+                    last_fi = streak_start.get(ev_type, 0) + streak.get(ev_type, 0)
+                    if fi > last_fi + 3:
+                        streak[ev_type] = 0
+
+        print(f"  YOLO events: {len(events)} "
+            f"({sum(1 for e in events if e.type == EventType.CRASH)} crash, "
+            f"{sum(1 for e in events if e.type == EventType.YELLOW_FLAG)} yellow)")
         return events
 
     # ── Utilities ─────────────────────────────────────────────────────────────

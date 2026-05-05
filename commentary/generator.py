@@ -3,17 +3,22 @@ commentary/generator.py
 ========================
 Rule-based template NLG that translates detected race events into
 on-screen commentary strings.
-
-Follows the Barzilay & Lapata (2005) content-planning approach used
-in live sports ticker systems — event types → parameterised templates.
 """
-
 from __future__ import annotations
 import random
+import re
+
 from analysis.race_stats import RaceEvent, EventType
 from analysis.penalty_detector import PenaltyEvent, PenaltyType
 
-DEFAULT_HOLD_FRAMES = 90   # 3 s at 30 fps
+UNIFIED_CLASSES = [
+    "car","RedBull","Mercedes","Ferrari","McLaren","Alpine","AstonMartin",
+    "Williams","Haas","KickSauber","RacingBulls",
+    "track_surface","crash","penalty_car","pitstop","race_start","marshal",
+    "yellow_flag","safety_car","off_track","on_track",
+]
+
+DEFAULT_HOLD_FRAMES = 120  # 4s at 30fps
 
 # ── Template bank ─────────────────────────────────────────────────────────────
 
@@ -73,15 +78,15 @@ RACE_TEMPLATES: dict[EventType, list[str]] = {
 PENALTY_TEMPLATES: dict[PenaltyType, list[str]] = {
     PenaltyType.TRACK_LIMIT_VIOLATION: [
         "{car_id} may have exceeded track limits — stewards will check.",
-        "All four wheels over the white line for {car_id}. That'll be noted.",
-        "Track limits at that corner for {car_id}. Could cost them lap time.",
+        "All four wheels over the white line for {car_id}.",
+        "Track limits at that corner for {car_id}. Could cost lap time.",
         "Stewards looking at {car_id} — possible track limits infringement.",
     ],
     PenaltyType.PUSHING_OFF_TRACK: [
-        "{car_id} squeezes {pushed_car} wide — that looks like a forcing move.",
-        "Controversial! {car_id} pushes {pushed_car} beyond the limits.",
-        "{car_id} under investigation — no room left for {pushed_car}.",
-        "Stewards will look at that — {car_id} forces {pushed_car} off.",
+        "{car_id} squeezes another car wide — forcing move under investigation.",
+        "Controversial! {car_id} pushes beyond the track limits.",
+        "{car_id} under investigation — no room left for the other car.",
+        "Stewards will look at that move from {car_id}.",
     ],
     PenaltyType.UNFAIR_OVERTAKE: [
         "{car_id} made that move under yellow flags — place may be handed back.",
@@ -101,7 +106,6 @@ PENALTY_TEMPLATES: dict[PenaltyType, list[str]] = {
     ],
 }
 
-
 class CommentaryGenerator:
     """
     Converts RaceEvent and PenaltyEvent lists to (frame_start, frame_end, text) tuples.
@@ -113,24 +117,20 @@ class CommentaryGenerator:
 
     def generate(
         self,
-        race_events:    list[RaceEvent],
-        penalty_events: list[PenaltyEvent] | None = None,
-        leaderboard:    dict | None = None,
+        race_events,
+        penalty_events=None,
+        leaderboard=None,
+        car_tracks=None,
     ) -> list[tuple[int, int, str]]:
-        """
-        Returns sorted list of (frame_start, frame_end, text) triples.
-        """
         lines = []
         for ev in race_events:
-            text = self._render_race(ev, leaderboard or {})
+            text = self._render_race(ev, leaderboard or {}, car_tracks or [])
             if text:
                 lines.append((ev.frame_idx, ev.frame_idx + self.hold_frames, text))
-
         for ev in (penalty_events or []):
             text = self._render_penalty(ev)
             if text:
                 lines.append((ev.frame_idx, ev.frame_idx + self.hold_frames, text))
-
         lines.sort(key=lambda x: x[0])
         return lines
 
@@ -145,36 +145,43 @@ class CommentaryGenerator:
 
     # ── Render helpers ────────────────────────────────────────────────────────
 
-    def _render_race(self, ev: RaceEvent, lb: dict) -> str | None:
+    def _render_race(
+        self,
+        ev:         RaceEvent,
+        lb:         dict,
+        car_tracks: list = None,
+    ) -> str | None:
         templates = RACE_TEMPLATES.get(ev.type)
         if not templates:
             return None
         tmpl = self._rng.choice(templates)
         ctx  = dict(ev.details)
-        ctx["year"] = "2024"
 
         if ev.type == EventType.OVERTAKE:
             car_a = ev.car_ids[0] if ev.car_ids else 0
             car_b = ev.car_ids[1] if len(ev.car_ids) > 1 else 0
-            ctx["overtaker"] = self._resolve(ctx.get("overtaker", car_a), lb, ev.frame_idx)
-            ctx["overtaken"] = self._resolve(ctx.get("overtaken", car_b), lb, ev.frame_idx)
-            # Remove position from context so templates with P{new_pos_a} are avoided
-            pos = ctx.get("new_pos_a")
-            ctx["new_pos_a"] = str(pos) if pos and str(pos) not in ("", "?", "???", "None") else ""
+            ctx["overtaker"] = self._resolve(
+                ctx.get("overtaker", car_a), lb, ev.frame_idx, car_tracks)
+            ctx["overtaken"]  = self._resolve(
+                ctx.get("overtaken",  car_b), lb, ev.frame_idx, car_tracks)
 
         elif ev.type in (EventType.PIT_ENTRY, EventType.PIT_EXIT, EventType.CRASH):
-            ctx["car_id"] = self._resolve(ev.car_ids[0] if ev.car_ids else "?", lb, ev.frame_idx)
+            ctx["car_id"] = self._resolve(
+                ev.car_ids[0] if ev.car_ids else 0, lb, ev.frame_idx, car_tracks)
 
         elif ev.type == EventType.CLOSE_BATTLE:
-            ctx["car_a"] = self._resolve(ev.car_ids[0], lb, ev.frame_idx)
-            ctx["car_b"] = self._resolve(ev.car_ids[1], lb, ev.frame_idx)
+            ctx["car_a"] = self._resolve(
+                ev.car_ids[0] if ev.car_ids else 0,
+                lb, ev.frame_idx, car_tracks)
+            ctx["car_b"] = self._resolve(
+                ev.car_ids[1] if len(ev.car_ids) > 1 else 0,
+                lb, ev.frame_idx, car_tracks)
             ctx.setdefault("gap_m", 0.0)
 
         try:
             return tmpl.format(**ctx)
-        except KeyError as e:
-            # Fill any missing keys with empty string instead of failing
-            import re
+        except KeyError:
+            # Fill any missing keys with empty string
             keys = re.findall(r'\{(\w+)[^}]*\}', tmpl)
             for k in keys:
                 ctx.setdefault(k, "")
@@ -188,17 +195,23 @@ class CommentaryGenerator:
         if not templates:
             return None
         tmpl = self._rng.choice(templates)
-        ctx  = dict(ev.details)
-        ctx["car_id"] = str(ev.car_id)
-        ctx.setdefault("pushed_car", "?")
+        ctx  = {}
+        ctx["car_id"] = f"Car {ev.car_id}"
         try:
             return tmpl.format(**ctx)
         except KeyError:
-            return None
+            # Fill any remaining unknown keys with empty string
+            import re
+            for k in re.findall(r'\{(\w+)[^}]*\}', tmpl):
+                ctx.setdefault(k, "")
+            try:
+                return tmpl.format(**ctx)
+            except Exception:
+                return None
 
     @staticmethod
-    def _resolve(car_id: int | str, lb: dict, frame_idx: int) -> str:
-        """Return car as #ID format. Uses leaderboard position number if available."""
+    def _resolve(car_id, lb, frame_idx, car_tracks=None) -> str:
+        # 1. Try OCR leaderboard
         try:
             if lb:
                 nearest = min(lb.keys(), key=lambda fi: abs(fi - frame_idx), default=None)
@@ -210,4 +223,18 @@ class CommentaryGenerator:
                         return f"#{num}"
         except (ValueError, TypeError):
             pass
-        return f"#{car_id}"
+
+        # 2. Get class name from car_tracks (preferred over tracker ID)
+        if car_tracks:
+            try:
+                tid = int(car_id)
+                for fi in range(max(0, frame_idx - 10), min(len(car_tracks), frame_idx + 10)):
+                    if tid in car_tracks[fi]:
+                        cls_id = car_tracks[fi][tid].get("class_id", 0)
+                        if 0 < cls_id < len(UNIFIED_CLASSES):
+                            return UNIFIED_CLASSES[cls_id]   # "McLaren", "Ferrari" etc.
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Just return tracker ID — never show raw number without context
+        return f"Car {car_id}"   # was f"#{car_id}" — cleaner without the hash

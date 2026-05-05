@@ -45,7 +45,8 @@ class PenaltyEvent:
 PIT_SPEED_LIMIT_KMH      = 80.0    # standard F1 pit lane speed limit
 TRACK_LIMIT_MARGIN_M     = 1.5     # allowance beyond track edge (metres)
 WEAVE_ANGLE_THRESHOLD    = 30.0    # degrees: direction reversal counts as weave
-WEAVE_WINDOW_FRAMES      = 60      # frames to look for multiple direction changes
+WEAVE_WINDOW_FRAMES  = 90      # longer window — reduces false positives
+MIN_WEAVE_SPEED_KMH  = 150.0   # only flag weaving at high speed (on straights)
 PUSH_PROXIMITY_M         = 4.0     # cars must be this close to register a push
 PUSH_DEVIATION_M         = 3.0     # off-track deviation needed to flag a push
 YELLOW_FLAG_CLASS_ID     = 17      # per UNIFIED_CLASSES
@@ -142,12 +143,27 @@ class PenaltyDetector:
                         changes += 1
                     last_dir = this_dir
                 if changes >= 2:
+                    # Only flag weaving at high speed — eliminates corner false positives
+                    spd = self.car_speeds.get(tid, [])
+                    avg_spd = 0.0
+                    if fis[i] < len(spd):
+                        window_speeds = [
+                            spd[f] for f in fis[i:i+WEAVE_WINDOW_FRAMES]
+                            if f < len(spd)
+                        ]
+                        avg_spd = sum(window_speeds) / max(len(window_speeds), 1)
+
+                    if avg_spd < 150.0:
+                        i += 10
+                        continue   # skip — likely cornering, not weaving
+
                     events.append(PenaltyEvent(
                         type      = PenaltyType.WEAVING,
                         frame_idx = fis[i],
                         car_id    = tid,
                         details   = {"direction_changes": changes,
-                                     "window_frames": WEAVE_WINDOW_FRAMES},
+                                     "window_frames": WEAVE_WINDOW_FRAMES,
+                                     "avg_speed_kmh": round(avg_spd, 1)},
                         severity  = "investigation",
                     ))
                     i += WEAVE_WINDOW_FRAMES

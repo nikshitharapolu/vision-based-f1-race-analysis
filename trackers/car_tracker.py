@@ -23,7 +23,9 @@ import cv2
 import numpy as np
 
 # Classes that represent cars on track (not surface/event labels)
-CAR_CLASS_IDS = {0,1,2,3,4,5,6,7,8,9,10}   # car + all team IDs
+CAR_CLASS_IDS   = {0,1,2,3,4,5,6,7,8,9,10}   # car + all team IDs (tracked)
+EVENT_CLASS_IDS = {12,13,14,15,16,17,18}        # crash, penalty, pitstop, flags (detected but not tracked)
+ALL_CLASS_IDS   = CAR_CLASS_IDS | EVENT_CLASS_IDS
 
 UNIFIED_CLASSES = [
     "car","RedBull","Mercedes","Ferrari","McLaren","Alpine","AstonMartin",
@@ -131,7 +133,7 @@ class CarTracker:
                 conf      = self.conf,
                 iou       = self.iou,
                 tracker   = "bytetrack.yaml",
-                classes   = list(CAR_CLASS_IDS) if self.car_only else None,
+                classes   = list(ALL_CLASS_IDS),   # ← include event classes
                 device    = self.device or None,
                 verbose   = False,
             )
@@ -157,11 +159,18 @@ class CarTracker:
         per_frame = []
         for r in results:
             frame_dict: dict[int, dict] = {}
-            if r.boxes is not None and r.boxes.id is not None:
+            if r.boxes is not None and len(r.boxes) > 0:
                 boxes    = r.boxes.xyxy.cpu().numpy()
                 confs    = r.boxes.conf.cpu().numpy()
-                ids      = r.boxes.id.cpu().numpy().astype(int)
+                # ids      = r.boxes.id.cpu().numpy().astype(int)
                 cls_ids  = r.boxes.cls.cpu().numpy().astype(int)
+                # IDs only exist for tracked boxes (cars) — events may not have IDs
+                
+                if r.boxes.id is not None:
+                    ids = r.boxes.id.cpu().numpy().astype(int)
+                else:
+                    ids = [-(i + 1) for i in range(len(boxes))]
+
                 for box, conf, tid, cid in zip(boxes, confs, ids, cls_ids):
                     frame_dict[int(tid)] = {
                         "bbox":     box.tolist(),
@@ -175,35 +184,50 @@ class CarTracker:
         self,
         tracks:  list[dict[int, dict]],
         max_gap: int = 30,
-    ) -> list[dict[int, dict]]:
+        ) -> list[dict[int, dict]]:
         """
         Linear bbox interpolation for occluded cars.
-        Mirrors ball interpolation in the tennis reference implementation.
-        Interpolated frames are marked with conf=0.0.
+        Event classes (crash, flag etc.) are NOT interpolated backwards —
+        only forward from detection point.
         """
+        # Classes that should never be backdated
+        NO_BACKDATE_CLASSES = {12, 13, 14, 15, 16, 17, 18}
+
         all_ids: set[int] = set()
         for fd in tracks:
             all_ids.update(fd.keys())
 
         for tid in all_ids:
             visible = [
-                (fi, tracks[fi][tid]["bbox"], tracks[fi][tid]["class_id"])
+            (fi, tracks[fi][tid]["bbox"],
+             tracks[fi][tid]["class_id"],
+             tracks[fi][tid].get("conf", 1.0))
                 for fi, fd in enumerate(tracks)
                 if tid in fd
             ]
             if len(visible) < 2:
                 continue
 
-            for (f0, b0, cid), (f1, b1, _) in zip(visible, visible[1:]):
+            for (f0, b0, cid0, conf0), (f1, b1, cid1, _) in zip(visible, visible[1:]):
                 gap = f1 - f0
                 if 1 < gap <= max_gap:
                     for f in range(f0 + 1, f1):
                         t  = (f - f0) / gap
                         ib = [b0[i] + t * (b1[i] - b0[i]) for i in range(4)]
+
+                        # For event classes, only fill FORWARD from detection
+                        # never backward — prevents early banner triggering
+                        interp_cid = cid0
+                        if cid0 in NO_BACKDATE_CLASSES:
+                            # Only interpolate forward from f0, not backward to f1
+                            if f <= f0 + gap // 2:
+                                continue   # skip frames before midpoint
+                            interp_cid = cid0
+
                         tracks[f][tid] = {
                             "bbox":     ib,
-                            "conf":     0.0,    # marks interpolated
-                            "class_id": cid,
+                            "conf":     0.0,
+                            "class_id": interp_cid,
                         }
         return tracks
 
