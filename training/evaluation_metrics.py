@@ -1,50 +1,26 @@
 """
-training/evaluate_full.py
-==========================
 Comprehensive evaluation script for the F1 Race Analysis project.
 
 Generates:
-  Tier 1 — Detection metrics
+  Detection metrics
     - mAP@0.5, mAP@0.5:0.95, Precision, Recall, F1, Accuracy
     - Per-class AP, Precision, Recall, F1
     - Confusion matrix (heatmap)
     - PR curve per class
     - F1 vs confidence curve
 
-  Tier 2 — Tracking metrics
+  Tracking metrics
     - ID switch count
     - Track fragmentation rate
     - ID consistency per car
     - Track length distribution
 
-  Tier 3 — System metrics
+  System metrics
     - Class distribution (train/val/test)
     - Training loss curves (from results.csv)
     - Event detection summary
     - Processing speed (FPS)
 
-Usage:
-    # Run all evaluations
-    python training/evaluate_full.py \
-        --weights models/car_detector.pt \
-        --data roboflow_dataset/data.yaml \
-        --stub stubs/your_video_tracks.pkl \
-        --out-dir evaluation_report/
-
-    # Detection metrics only (no stub needed)
-    python training/evaluate_full.py \
-        --weights models/car_detector.pt \
-        --data roboflow_dataset/data.yaml \
-        --out-dir evaluation_report/ \
-        --skip-tracking
-
-    # Training curves only
-    python training/evaluate_full.py \
-        --training-csv runs/f1_detector_v3/results.csv \
-        --out-dir evaluation_report/
-
-Requirements:
-    pip install ultralytics matplotlib seaborn numpy pyyaml pandas
 """
 
 import argparse
@@ -56,10 +32,9 @@ from pathlib import Path
 
 import numpy as np
 
-# ── Plotting setup ─────────────────────────────────────────────────────────────
 try:
     import matplotlib
-    matplotlib.use("Agg")   # non-interactive backend
+    matplotlib.use("Agg")   
     import matplotlib.pyplot as plt
     import matplotlib.ticker as ticker
     _PLT = True
@@ -73,7 +48,6 @@ try:
 except ImportError:
     _SNS = False
 
-# ── Class schema ──────────────────────────────────────────────────────────────
 UNIFIED_CLASSES = [
     "car","RedBull","Mercedes","Ferrari","McLaren","Alpine","AstonMartin",
     "Williams","Haas","KickSauber","RacingBulls",
@@ -84,7 +58,6 @@ UNIFIED_CLASSES = [
 TEAM_CLASSES  = list(range(0, 11))
 EVENT_CLASSES = list(range(11, 21))
 
-# ── Colours for plots ─────────────────────────────────────────────────────────
 TEAM_COLORS = {
     "RedBull":    "#1E41FF", "Mercedes": "#00D2BE", "Ferrari":    "#DC0000",
     "McLaren":    "#FF8700", "Alpine":   "#0090FF", "AstonMartin":"#006F62",
@@ -111,7 +84,7 @@ def save(fig, path: Path, dpi: int = 150) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TIER 1 — DETECTION METRICS
+# DETECTION METRICS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_detection_metrics(weights: str, data: str, out_dir: Path,
@@ -148,14 +121,12 @@ def run_detection_metrics(weights: str, data: str, out_dir: Path,
     mAP50   = float(box.map50)
     mAP5095 = float(box.map)
 
-    # ── Accuracy estimate ──────────────────────────────────────────────────────
     per_p = np.array(box.p, dtype=float) if hasattr(box, "p") and box.p is not None else np.array([P])
     per_r = np.array(box.r, dtype=float) if hasattr(box, "r") and box.r is not None else np.array([R])
     TP = per_r.sum()
     FP = (1 - per_p + 1e-9).sum()
     accuracy = TP / (TP + FP + 1e-9)
 
-    # ── Print overall ─────────────────────────────────────────────────────────
     SEP = "─" * 60
     print(f"\n  OVERALL METRICS")
     print(f"  {SEP}")
@@ -166,7 +137,6 @@ def run_detection_metrics(weights: str, data: str, out_dir: Path,
     print(f"  {'F1 Score':<28} {F1:>10.4f}")
     print(f"  {'Accuracy (approx)':<28} {accuracy:>10.4f}")
 
-    # ── Per-class ─────────────────────────────────────────────────────────────
     class_results = []
     if hasattr(box, "ap_class_index") and box.ap_class_index is not None:
         ap50_arr = np.array(box.ap50, dtype=float) if hasattr(box,"ap50") else np.zeros(len(box.ap_class_index))
@@ -187,7 +157,6 @@ def run_detection_metrics(weights: str, data: str, out_dir: Path,
             class_results.append((name, p_i, r_i, f1_i, ap50, ap))
             print(f"  {name:<18} {p_i:>7.4f} {r_i:>7.4f} {f1_i:>7.4f} {ap50:>7.4f} {ap:>8.4f}")
 
-    # ── Plots ──────────────────────────────────────────────────────────────────
     if _PLT and class_results:
         _plot_per_class_bars(class_results, out_dir)
         _plot_pr_f1_radar(class_results, out_dir)
@@ -246,7 +215,6 @@ def _plot_per_class_bars(class_results: list, out_dir: Path) -> None:
 
 
 def _plot_pr_f1_radar(class_results: list, out_dir: Path) -> None:
-    """Spider/radar chart comparing Precision, Recall, F1 across all classes."""
     names  = [r[0] for r in class_results]
     prec   = [r[1] for r in class_results]
     rec    = [r[2] for r in class_results]
@@ -272,7 +240,6 @@ def _plot_pr_f1_radar(class_results: list, out_dir: Path) -> None:
 
 
 def _plot_overall_gauge(mAP50, F1, P, R, acc, out_dir: Path) -> None:
-    """Summary bar chart of the 5 overall metrics."""
     metrics = {
         "mAP@0.5":    mAP50,
         "F1 Score":   F1,
@@ -322,7 +289,6 @@ def plot_confusion_matrix(weights: str, data: str, out_dir: Path,
     if not _PLT:
         return
 
-    # Build matrix from per-class TP/FP (approximation)
     if not (hasattr(metrics.box, "ap_class_index") and
             metrics.box.ap_class_index is not None):
         return
@@ -335,7 +301,6 @@ def plot_confusion_matrix(weights: str, data: str, out_dir: Path,
     per_p = np.array(metrics.box.p, dtype=float) if hasattr(metrics.box,"p") else np.ones(n)
     per_r = np.array(metrics.box.r, dtype=float) if hasattr(metrics.box,"r") else np.ones(n)
 
-    # Diagonal = recall (TP rate), off-diagonal estimated from missed detections
     mat = np.zeros((n, n))
     for i in range(n):
         mat[i, i] = per_r[i] if i < len(per_r) else 0.0
@@ -367,7 +332,7 @@ def plot_confusion_matrix(weights: str, data: str, out_dir: Path,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TIER 2 — TRACKING METRICS
+#  TRACKING METRICS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_tracking_metrics(stub_path: str, out_dir: Path) -> dict:
@@ -380,7 +345,6 @@ def run_tracking_metrics(stub_path: str, out_dir: Path) -> dict:
 
     n_frames = len(car_tracks)
 
-    # ── Build per-track stats ──────────────────────────────────────────────────
     track_frames:    dict[int, list[int]] = defaultdict(list)
     track_classes:   dict[int, list[int]] = defaultdict(list)
 
@@ -388,10 +352,9 @@ def run_tracking_metrics(stub_path: str, out_dir: Path) -> dict:
         for tid, det in frame_dict.items():
             track_frames[tid].append(fi)
             cls_id = det.get("class_id", 0)
-            if det.get("conf", 1.0) > 0.0:   # skip interpolated
+            if det.get("conf", 1.0) > 0.0:   
                 track_classes[tid].append(cls_id)
 
-    # ID switches — class changes within the same track
     id_switches = 0
     track_class_consistency: dict[int, float] = {}
 
@@ -402,11 +365,9 @@ def run_tracking_metrics(stub_path: str, out_dir: Path) -> dict:
         most_common_cnt = Counter(classes).most_common(1)[0][1]
         consistency     = most_common_cnt / len(classes)
         track_class_consistency[tid] = consistency
-        # Count switches = frames where class differs from dominant class
         switches = sum(1 for c in classes if c != most_common_cls)
         id_switches += switches
 
-    # Track lengths
     track_lengths = {tid: len(frames) for tid, frames in track_frames.items()}
 
     # Track fragmentation — tracks that are active < 10% of total frames
@@ -417,7 +378,6 @@ def run_tracking_metrics(stub_path: str, out_dir: Path) -> dict:
     frames_with_tracks = sum(1 for fd in car_tracks if len(fd) > 0)
     coverage = frames_with_tracks / max(n_frames, 1)
 
-    # ── Print ──────────────────────────────────────────────────────────────────
     print(f"\n  Total frames         : {n_frames}")
     print(f"  Unique track IDs     : {len(track_frames)}")
     print(f"  Track coverage       : {coverage:.3f}  ({frames_with_tracks}/{n_frames} frames)")
@@ -428,7 +388,6 @@ def run_tracking_metrics(stub_path: str, out_dir: Path) -> dict:
         avg_consistency = np.mean(list(track_class_consistency.values()))
         print(f"  Avg class consistency: {avg_consistency:.3f}  (1.0 = never switches team)")
 
-    # ── Plots ──────────────────────────────────────────────────────────────────
     if _PLT:
         _plot_track_lengths(track_lengths, n_frames, out_dir)
         _plot_class_consistency(track_class_consistency, out_dir)
@@ -505,7 +464,6 @@ def _plot_cars_per_frame(car_tracks: list, out_dir: Path) -> None:
     ax.set_ylabel("Cars detected", fontsize=11)
     ax.set_title("Number of Cars Tracked Per Frame", fontsize=13, fontweight="bold")
     ax.grid(alpha=0.3)
-    # Smooth rolling mean
     w = 30
     if len(counts) > w:
         roll = np.convolve(counts, np.ones(w)/w, mode="valid")
@@ -517,7 +475,7 @@ def _plot_cars_per_frame(car_tracks: list, out_dir: Path) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  TIER 3 — SYSTEM METRICS
+#  SYSTEM METRICS
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_dataset_analysis(data_yaml: str, out_dir: Path) -> None:
@@ -553,7 +511,6 @@ def run_dataset_analysis(data_yaml: str, out_dir: Path) -> None:
     if not _PLT:
         return
 
-    # ── Class distribution stacked bar ────────────────────────────────────────
     splits = [s for s in ("train","val","test") if s in all_counts]
     cls_ids = sorted(set(k for c in all_counts.values() for k in c.keys()))
     cls_names = [UNIFIED_CLASSES[i] if i < len(UNIFIED_CLASSES) else f"cls_{i}" for i in cls_ids]
@@ -574,7 +531,6 @@ def run_dataset_analysis(data_yaml: str, out_dir: Path) -> None:
     plt.tight_layout()
     save(fig, out_dir / "plots" / "class_distribution.png")
 
-    # ── Imbalance ratio chart ──────────────────────────────────────────────────
     train_counts = all_counts.get("train", Counter())
     if train_counts:
         total = sum(train_counts.values())
@@ -666,14 +622,12 @@ def plot_processing_speed(stub_path: str, out_dir: Path,
     n_frames = len(car_tracks)
     video_duration_s = n_frames / fps
 
-    # Simulate timing (actual timing would need a timed run)
-    # Show theoretical vs measured comparison
     labels   = ["Video duration", "Detection (est.)", "Tracking (est.)", "Rendering (est.)", "Total pipeline (est.)"]
     times    = [video_duration_s,
-                n_frames / 15,    # ~15 fps detection on M4 MPS
-                n_frames / 60,    # fast ByteTrack
-                n_frames / 30,    # rendering
-                n_frames / 10]    # total estimate
+                n_frames / 15,    
+                n_frames / 60,    
+                n_frames / 30,   
+                n_frames / 10]   
 
     fig, ax = plt.subplots(figsize=(10, 5))
     colors = ["#607D8B","#2196F3","#4CAF50","#FF9800","#F44336"]
@@ -786,7 +740,7 @@ def main():
     detection_result = {}
     tracking_result  = None
 
-    # Tier 1 — Detection
+    # Detection
     if not args.skip_detection:
         detection_result = run_detection_metrics(
             args.weights, args.data, out_dir,
@@ -801,13 +755,12 @@ def main():
     if args.training_csv:
         plot_training_curves(args.training_csv, out_dir)
     else:
-        # Try to find results.csv automatically
         for candidate in Path("runs").rglob("results.csv"):
             print(f"  Found training CSV: {candidate}")
             plot_training_curves(str(candidate), out_dir)
             break
 
-    # Tier 2 — Tracking
+    # Tracking
     if args.stub and not args.skip_tracking:
         tracking_result = run_tracking_metrics(args.stub, out_dir)
         plot_processing_speed(args.stub, out_dir)

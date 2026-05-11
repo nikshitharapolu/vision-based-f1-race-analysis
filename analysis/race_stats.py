@@ -1,11 +1,7 @@
 """
-analysis/race_stats.py
-=======================
-Speed estimation, overtake detection, pit stop detection, close battle
-alerts, and crash/flag event tagging.
+Speed estimation, overtake detection, pit stop detection, 
+close battle alerts and crash/flag event tagging.
 
-Analogous to analysis/player_stats.py in abdullahtarek/tennis_analysis,
-extended with race-specific event detection.
 """
 
 from __future__ import annotations
@@ -15,17 +11,15 @@ from enum import Enum, auto
 from typing import Any
 
 
-# ── Constants ─────────────────────────────────────────────────────────────────
 
-SPEED_SMOOTH_WIN        = 5      # rolling-mean window (frames)
+SPEED_SMOOTH_WIN        = 5     
 MIN_OVERTAKE_SPEED_KMH  = 50.0
 PIT_ENTRY_SPEED_KMH     = 80.0
-BATTLE_GAP_M            = 30.0   # metres — "close battle" threshold
-OVERTAKE_COOLDOWN       = 30     # min frames between same pair overtakes
-BATTLE_COOLDOWN         = 90     # frames between battle alerts (same pair)
+BATTLE_GAP_M            = 30.0   
+OVERTAKE_COOLDOWN       = 30     
+BATTLE_COOLDOWN         = 90     
 
 
-# ── Event types ───────────────────────────────────────────────────────────────
 
 class EventType(Enum):
     OVERTAKE      = auto()
@@ -49,22 +43,21 @@ class RaceEvent:
         return f"{self.type.name:<14} [{cars}]  {self.details}"
 
 
-# ── Main class ────────────────────────────────────────────────────────────────
 
 class RaceStats:
     """
-    Consumes car tracks + projected world positions.
-    Emits events and per-car statistics.
+    Input: car tracks + projected world positions.
+    Ouput: events and per-car statistics.
     """
 
     def __init__(
         self,
         car_tracks:    list[dict[int, dict]],
-        car_positions: dict[int, list],      # tid → list[TrackCoord]
-        leaderboard:   dict[int, Any],       # frame_idx → FrameLeaderboard
+        car_positions: dict[int, list],      
+        leaderboard:   dict[int, Any],       
         fps:           float = 30.0,
         mini_track=    None,
-        detected_events: list[dict] | None = None,  # from YOLO (crash, flag…)
+        detected_events: list[dict] | None = None, 
     ):
         self.car_tracks    = car_tracks
         self.car_positions = car_positions
@@ -74,11 +67,10 @@ class RaceStats:
         self.yolo_events   = detected_events or []
         self._n_frames     = len(car_tracks)
 
-    # ── Speed ─────────────────────────────────────────────────────────────────
 
     def compute_speeds(self) -> dict[int, list[float]]:
         """
-        Compute instantaneous speed in km/h for every car at every frame.
+        Compute speed in km/h for every car at every frame.
         Uses pixel displacement projected through the homography.
         """
         speeds: dict[int, list[float]] = {}
@@ -108,7 +100,6 @@ class RaceStats:
                 }
         return stats
 
-    # ── Running order ─────────────────────────────────────────────────────────
 
     def compute_running_order(self) -> list[dict[int, int]]:
         """
@@ -127,7 +118,6 @@ class RaceStats:
             orders.append({tid: pos+1 for pos, (tid,_) in enumerate(ranked)})
         return orders
 
-    # ── Event detection ───────────────────────────────────────────────────────
 
     def detect_events(self) -> list[RaceEvent]:
         speeds = self.compute_speeds()
@@ -224,9 +214,6 @@ class RaceStats:
     def _detect_yolo_events(self) -> list[RaceEvent]:
         """
         Convert YOLO event detections to RaceEvents.
-        Requires detection to appear in multiple consecutive frames
-        before firing — eliminates single-frame false positives and
-        early triggering from motion blur.
         """
         events = []
 
@@ -239,9 +226,8 @@ class RaceStats:
             "race_start":  EventType.RACE_START,
         }
 
-        # Minimum consecutive frames needed to confirm event
         CONFIRM_FRAMES = {
-            EventType.CRASH:       5,   # crash must appear in 5 consecutive frames
+            EventType.CRASH:       5,   
             EventType.YELLOW_FLAG: 4,
             EventType.RACE_START:  3,
         }
@@ -278,24 +264,20 @@ class RaceStats:
 
                 seen_types.add(ev_type)
 
-                # Build consecutive streak
                 if ev_type not in streak:
                     streak[ev_type]       = 1
                     streak_start[ev_type] = fi
                 else:
-                    # Check if this is consecutive (within 3 frames gap)
                     last_fi = streak_start.get(ev_type, 0) + streak.get(ev_type, 0)
                     if fi <= last_fi + 3:
                         streak[ev_type] += 1
                     else:
-                        # Reset streak
                         streak[ev_type]       = 1
                         streak_start[ev_type] = fi
 
                 confirm_needed = CONFIRM_FRAMES.get(ev_type, 3)
                 cooldown       = COOLDOWN.get(ev_type, 90)
 
-                # Fire event only when streak reaches confirmation threshold
                 if (streak[ev_type] >= confirm_needed and
                         fi - last_seen.get(ev_type, -9999) >= cooldown):
 
@@ -304,7 +286,7 @@ class RaceStats:
                     event_fi = streak_start[ev_type]
 
                     last_seen[ev_type]  = fi
-                    streak[ev_type]     = 0   # reset after firing
+                    streak[ev_type]     = 0  
 
                     events.append(RaceEvent(
                         type      = ev_type,
@@ -319,7 +301,7 @@ class RaceStats:
             # Reset streaks for event types not seen this frame
             for ev_type in list(streak.keys()):
                 if ev_type not in seen_types:
-                    # Allow small gaps (3 frames) before resetting streak
+                    # to allow small gaps (3 frames) before resetting streak
                     last_fi = streak_start.get(ev_type, 0) + streak.get(ev_type, 0)
                     if fi > last_fi + 3:
                         streak[ev_type] = 0
@@ -329,7 +311,6 @@ class RaceStats:
             f"{sum(1 for e in events if e.type == EventType.YELLOW_FLAG)} yellow)")
         return events
 
-    # ── Utilities ─────────────────────────────────────────────────────────────
 
     @staticmethod
     def _smooth(values: list[float], window: int) -> list[float]:

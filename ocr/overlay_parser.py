@@ -1,10 +1,7 @@
 """
-ocr/overlay_parser.py
-======================
 Extracts leaderboard and gap data from broadcast timing overlays
 using Tesseract OCR.
-
-Analogous to (new module) in the proposal — not present in tennis_analysis.
+Future scope
 """
 
 from __future__ import annotations
@@ -25,7 +22,6 @@ try:
 except ImportError:
     _TESS = False
 
-# ── Broadcast region presets (relative to frame W/H) ─────────────────────────
 
 REGIONS = {
     "sky_f1": {
@@ -49,8 +45,8 @@ PSM_LINE   = "--psm 7 --oem 1"
 @dataclass
 class LeaderboardEntry:
     position:      int
-    driver_number: str    # e.g. "44", "VER", "1"
-    gap:           str    # e.g. "+1.234", "LAP 1", "LEADER"
+    driver_number: str    
+    gap:           str    
 
 
 @dataclass
@@ -68,9 +64,8 @@ class FrameLeaderboard:
 
 class OverlayParser:
     """
-    Extracts structured leaderboard state from broadcast frames.
+    Extracts structured leaderboard state from broadcast frames
 
-    If Tesseract is not installed, falls back to mock data.
     """
 
     _ENTRY_RE = re.compile(

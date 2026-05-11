@@ -1,6 +1,4 @@
 """
-commentary/generator.py
-========================
 Rule-based template NLG that translates detected race events into
 on-screen commentary strings.
 """
@@ -18,9 +16,9 @@ UNIFIED_CLASSES = [
     "yellow_flag","safety_car","off_track","on_track",
 ]
 
-DEFAULT_HOLD_FRAMES = 120  # 4s at 30fps
+DEFAULT_HOLD_FRAMES = 120  #
 
-# ── Template bank ─────────────────────────────────────────────────────────────
+# Template bank
 
 RACE_TEMPLATES: dict[EventType, list[str]] = {
     EventType.OVERTAKE: [
@@ -108,7 +106,7 @@ PENALTY_TEMPLATES: dict[PenaltyType, list[str]] = {
 
 class CommentaryGenerator:
     """
-    Converts RaceEvent and PenaltyEvent lists to (frame_start, frame_end, text) tuples.
+    Converts RaceEvent and PenaltyEvent lists to (frame_start, frame_end, text) tuples
     """
 
     def __init__(self, hold_frames: int = DEFAULT_HOLD_FRAMES, seed: int = 42):
@@ -139,11 +137,9 @@ class CommentaryGenerator:
         lines:     list[tuple[int, int, str]],
         frame_idx: int,
     ) -> str | None:
-        """Return the most recent active commentary line at frame_idx, or None."""
         active = [text for (f0, f1, text) in lines if f0 <= frame_idx <= f1]
         return active[-1] if active else None
 
-    # ── Render helpers ────────────────────────────────────────────────────────
 
     def _render_race(
         self,
@@ -181,7 +177,6 @@ class CommentaryGenerator:
         try:
             return tmpl.format(**ctx)
         except KeyError:
-            # Fill any missing keys with empty string
             keys = re.findall(r'\{(\w+)[^}]*\}', tmpl)
             for k in keys:
                 ctx.setdefault(k, "")
@@ -200,7 +195,6 @@ class CommentaryGenerator:
         try:
             return tmpl.format(**ctx)
         except KeyError:
-            # Fill any remaining unknown keys with empty string
             import re
             for k in re.findall(r'\{(\w+)[^}]*\}', tmpl):
                 ctx.setdefault(k, "")
@@ -211,7 +205,6 @@ class CommentaryGenerator:
 
     @staticmethod
     def _resolve(car_id, lb, frame_idx, car_tracks=None) -> str:
-        # 1. Try OCR leaderboard
         try:
             if lb:
                 nearest = min(lb.keys(), key=lambda fi: abs(fi - frame_idx), default=None)
@@ -224,7 +217,6 @@ class CommentaryGenerator:
         except (ValueError, TypeError):
             pass
 
-        # 2. Get class name from car_tracks (preferred over tracker ID)
         if car_tracks:
             try:
                 tid = int(car_id)
@@ -236,5 +228,4 @@ class CommentaryGenerator:
             except (ValueError, TypeError):
                 pass
 
-        # 3. Just return tracker ID — never show raw number without context
-        return f"Car {car_id}"   # was f"#{car_id}" — cleaner without the hash
+        return f"Car {car_id}"   

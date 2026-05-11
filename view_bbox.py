@@ -1,26 +1,5 @@
 """
-F1 Dataset Bounding Box Viewer
-================================
 Visualise YOLO-format bounding boxes on your dataset images using OpenCV.
-
-Controls:
-  SPACE / RIGHT arrow  — next image
-  LEFT arrow           — previous image
-  1-9                  — filter by class ID (press same key again to clear)
-  L                    — toggle labels on/off
-  B                    — toggle filled boxes vs outline only
-  S                    — save current annotated frame to output folder
-  G                    — jump to a specific image number (type number + ENTER)
-  Q / ESC              — quit
-
-Requirements:
-    pip install opencv-python numpy
-
-Usage:
-    python view_bbox.py                          # auto-detects roboflow_dataset/
-    python view_bbox.py --dataset path/to/dataset
-    python view_bbox.py --split val              # view val split instead of train
-    python view_bbox.py --start 50               # start from image #50
 """
 
 import argparse
@@ -30,10 +9,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CLASS SCHEMA — matches your unified data.yaml
-# ══════════════════════════════════════════════════════════════════════════════
 
 CLASS_NAMES = {
     0: "car",
@@ -47,7 +22,6 @@ CLASS_NAMES = {
     8: "Williams",
 }
 
-# BGR colours per class (visually distinct)
 CLASS_COLORS = {
     0: (200, 200, 200),   # car          — white/grey
     1: (0,   50,  255),   # penalty_car  — red
@@ -65,22 +39,11 @@ def get_color(cls_id: int) -> tuple:
 
 def get_name(cls_id: int) -> str:
     return CLASS_NAMES.get(cls_id, f"class_{cls_id}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DATASET LOADER
-# ══════════════════════════════════════════════════════════════════════════════
-
 def find_pairs(dataset_dir: Path, split: str) -> list[tuple[Path, Path | None]]:
     """
     Find all (image_path, label_path_or_None) pairs for a given split.
-    Supports both:
-      dataset/train/images/*.jpg  +  dataset/train/labels/*.txt
-      dataset/images/*.jpg        +  dataset/labels/*.txt  (flat layout)
     """
     img_exts = {".jpg", ".jpeg", ".png", ".bmp"}
-
-    # Try split subfolder first
     candidates = [
         dataset_dir / split / "images",
         dataset_dir / "images",
@@ -96,8 +59,6 @@ def find_pairs(dataset_dir: Path, split: str) -> list[tuple[Path, Path | None]]:
     if img_dir is None:
         print(f"[ERROR] No images found in {dataset_dir} for split '{split}'")
         sys.exit(1)
-
-    # Find matching labels dir
     lbl_dir_candidates = [
         img_dir.parent / "labels",
         img_dir.parent.parent / split / "labels",
@@ -120,7 +81,7 @@ def find_pairs(dataset_dir: Path, split: str) -> list[tuple[Path, Path | None]]:
 
 
 def load_label(lbl_path: Path) -> list[dict]:
-    """Parse a YOLO .txt label file into a list of box dicts."""
+    #Parse a YOLO .txt label file into a list of box dicts
     boxes = []
     if lbl_path is None or not lbl_path.exists():
         return boxes
@@ -142,10 +103,6 @@ def load_label(lbl_path: Path) -> list[dict]:
 
 
 def load_yaml_classes(dataset_dir: Path) -> None:
-    """
-    Optionally read class names from data.yaml and override CLASS_NAMES/CLASS_COLORS.
-    Safe to skip if pyyaml not installed.
-    """
     yaml_path = dataset_dir / "data.yaml"
     if not yaml_path.exists():
         return
@@ -161,13 +118,7 @@ def load_yaml_classes(dataset_dir: Path) -> None:
                 CLASS_NAMES[int(k)] = v
         print(f"  Loaded {len(CLASS_NAMES)} class names from data.yaml")
     except Exception:
-        pass   # pyyaml not installed or bad yaml — use defaults
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DRAWING
-# ══════════════════════════════════════════════════════════════════════════════
-
+        pass   
 def draw_boxes(
     image:        np.ndarray,
     boxes:        list[dict],
@@ -176,7 +127,6 @@ def draw_boxes(
     filled:       bool       = True,
     fill_alpha:   float      = 0.25,
 ) -> np.ndarray:
-    """Draw YOLO bounding boxes on a copy of image."""
     out  = image.copy()
     H, W = out.shape[:2]
 
@@ -192,21 +142,13 @@ def draw_boxes(
         y1 = int((box["cy"] - box["h"] / 2) * H)
         x2 = int((box["cx"] + box["w"] / 2) * W)
         y2 = int((box["cy"] + box["h"] / 2) * H)
-
-        # Clamp to image bounds
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(W-1, x2), min(H-1, y2)
-
-        # Semi-transparent fill
         if filled and (x2 > x1) and (y2 > y1):
             overlay       = out.copy()
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
             cv2.addWeighted(overlay, fill_alpha, out, 1 - fill_alpha, 0, out)
-
-        # Solid border
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-
-        # Label pill
         if show_labels:
             label     = f"{cls}: {name}"
             font      = cv2.FONT_HERSHEY_SIMPLEX
@@ -214,16 +156,13 @@ def draw_boxes(
             thickness = 1
             (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
             pad = 3
-            # Place label above box, flip below if it would clip top
             lx1 = x1
             ly1 = y1 - th - pad * 2 - baseline
             if ly1 < 0:
                 ly1 = y1 + 2
             lx2 = lx1 + tw + pad * 2
             ly2 = ly1 + th + pad * 2 + baseline
-
             cv2.rectangle(out, (lx1, ly1), (lx2, ly2), color, -1)
-            # White text
             cv2.putText(out, label,
                         (lx1 + pad, ly2 - baseline - pad),
                         font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
@@ -242,24 +181,17 @@ def build_hud(
     filled:      bool,
     split:       str,
 ) -> np.ndarray:
-    """Overlay HUD info bar at the bottom of the image."""
     H, W = image.shape[:2]
     bar_h = 38
     hud   = np.zeros((H + bar_h, W, 3), dtype=np.uint8)
     hud[:H] = image
-
-    # Bottom bar (dark)
     hud[H:] = (28, 28, 28)
 
     visible = [b for b in boxes if filter_cls is None or b["cls"] == filter_cls]
-
-    # Count per class
     cls_counts: dict[int, int] = {}
     for b in visible:
         cls_counts[b["cls"]] = cls_counts.get(b["cls"], 0) + 1
     cls_str = "  ".join(f"{get_name(c)}×{n}" for c, n in sorted(cls_counts.items()))
-
-    # Filter indicator
     flt_str = f"  [cls={filter_cls}: {get_name(filter_cls)}]" if filter_cls is not None else ""
 
     line1 = f"  [{idx+1}/{total}]  {img_path.name}{flt_str}"
@@ -268,24 +200,15 @@ def build_hud(
     font  = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(hud, line1, (4, H + 14), font, 0.42, (220, 220, 220), 1, cv2.LINE_AA)
     cv2.putText(hud, line2, (4, H + 30), font, 0.38, (150, 150, 150), 1, cv2.LINE_AA)
-
-    # Right side: mode indicators
     modes = []
     if show_labels: modes.append("Labels:ON")
     if filled:      modes.append("Fill:ON")
     mode_str = "  ".join(modes)
     cv2.putText(hud, mode_str, (W - 160, H + 14), font, 0.38, (100, 180, 100), 1, cv2.LINE_AA)
-
-    # Shortcut reminder
     cv2.putText(hud, "SPC=next  L=labels  B=fill  S=save  G=goto  Q=quit",
                 (W - 420, H + 30), font, 0.33, (90, 90, 90), 1, cv2.LINE_AA)
 
     return hud
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  STATISTICS SUMMARY
-# ══════════════════════════════════════════════════════════════════════════════
 
 def print_stats(pairs: list, split: str) -> None:
     total_imgs  = len(pairs)
@@ -314,11 +237,6 @@ def print_stats(pairs: list, split: str) -> None:
         print(f"    {cls_id:>2}  {get_name(cls_id):<15}  {count:>5}  {pct:5.1f}%  {bar}")
     print(f"{'─'*50}\n")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  MAIN VIEWER LOOP
-# ══════════════════════════════════════════════════════════════════════════════
-
 def run_viewer(
     dataset_dir: Path,
     split:       str  = "train",
@@ -342,12 +260,11 @@ def run_viewer(
     filter_cls   = None
     show_labels  = True
     filled       = True
-    goto_buffer  = ""   # accumulates digit keys for G command
+    goto_buffer  = "" 
 
     WINDOW = "F1 Dataset Viewer"
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW, 960, 600)
-
     while True:
         img_path, lbl_path = pairs[idx]
         image = cv2.imread(str(img_path))
@@ -366,13 +283,13 @@ def run_viewer(
 
         key = cv2.waitKey(30) & 0xFF
 
-        if key in (ord('q'), ord('Q'), 27):   # Q or ESC
+        if key in (ord('q'), ord('Q'), 27): 
             break
 
-        elif key in (ord(' '), 83, 3):        # SPACE or RIGHT arrow
+        elif key in (ord(' '), 83, 3):    
             idx = (idx + 1) % len(pairs)
 
-        elif key in (81, 2):                  # LEFT arrow
+        elif key in (81, 2):              
             idx = (idx - 1) % len(pairs)
 
         elif key in (ord('l'), ord('L')):
@@ -381,18 +298,18 @@ def run_viewer(
         elif key in (ord('b'), ord('B')):
             filled = not filled
 
-        elif key in (ord('s'), ord('S')):     # Save current frame
+        elif key in (ord('s'), ord('S')):  
             out_path = save_dir / f"annotated_{img_path.stem}.jpg"
             cv2.imwrite(str(out_path), frame)
             print(f"  Saved → {out_path}")
 
-        elif key in (ord('g'), ord('G')):     # Start goto mode
+        elif key in (ord('g'), ord('G')):    
             goto_buffer = ""
             print("  Enter image number and press ENTER:")
 
-        elif key == 13 and goto_buffer:       # ENTER — confirm goto
+        elif key == 13 and goto_buffer:       
             try:
-                target = int(goto_buffer) - 1   # 1-indexed input
+                target = int(goto_buffer) - 1   
                 idx    = max(0, min(target, len(pairs) - 1))
                 print(f"  Jumped to image {idx+1}")
             except ValueError:
@@ -400,13 +317,11 @@ def run_viewer(
             goto_buffer = ""
 
         elif 48 <= key <= 57 and goto_buffer != "":
-            # Accumulate digits for goto
             goto_buffer += chr(key)
             print(f"  Goto: {goto_buffer}_", end="\r")
 
         elif ord('1') <= key <= ord('9') and goto_buffer == "":
-            # Filter by class (press same key to clear)
-            cls_id = key - ord('0') - 1      # '1' → 0, '2' → 1, etc.
+            cls_id = key - ord('0') - 1     
             if filter_cls == cls_id:
                 filter_cls = None
                 print(f"  Filter cleared — showing all classes")
@@ -423,11 +338,6 @@ def run_viewer(
 
     cv2.destroyAllWindows()
     print("\n  Viewer closed.")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CLI
-# ══════════════════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser(

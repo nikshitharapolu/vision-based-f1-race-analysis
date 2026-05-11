@@ -1,7 +1,7 @@
 """
 main.py — F1 Race Analysis Pipeline
 =====================================
-Full 7-stage pipeline adapted from abdullahtarek/tennis_analysis:
+Full 7-stage pipeline 
 
   1. Video ingest & preprocessing
   2. Car detection (YOLOv8 fine-tuned)
@@ -20,7 +20,7 @@ Usage:
     python main.py --input race.mp4 --save-stub
     python main.py --input race.mp4 --read-stub --output output.mp4
 
-    # Skip OCR (no Tesseract installed)
+    # Skip OCR (for now)
     python main.py --input race.mp4 --skip-ocr
 
     # Custom model and circuit
@@ -44,9 +44,6 @@ from analysis.penalty_detector import PenaltyDetector
 from commentary.generator    import CommentaryGenerator
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  CLI
-# ══════════════════════════════════════════════════════════════════════════════
 
 def parse_args():
     p = argparse.ArgumentParser(description="F1 Race Analysis Pipeline")
@@ -99,10 +96,6 @@ def parse_args():
     return p.parse_args()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MAIN
-# ══════════════════════════════════════════════════════════════════════════════
-
 def main():
     t0   = time.time()
     args = parse_args()
@@ -110,13 +103,11 @@ def main():
     stub_path = Path(args.stub_dir) / (Path(args.input).stem + "_tracks.pkl")
     stub_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # ── 1. Ingest ──────────────────────────────────────────────────────────────
     print("\n[1/7] Reading video …")
     frames = read_video(args.input)
     fps    = get_video_fps(args.input)
     print(f"      {len(frames)} frames  {fps:.0f} fps")
 
-    # ── 2+3. Detection + Tracking ──────────────────────────────────────────────
     print("[2/7] Car detection + tracking …")
     tracker    = CarTracker(
         model_path = args.detector,
@@ -129,13 +120,11 @@ def main():
         batch_size = 8,
     )
 
-    # Smooth class IDs to prevent lighting-induced flickering
     car_tracks = smooth_class_ids(car_tracks, window=15)
 
     n_ids = len({tid for fd in car_tracks for tid in fd})
     print(f"      {n_ids} unique car IDs tracked")
 
-    # Extract event-class detections — skip interpolated frames (conf=0.0)
     print("  Extracting event detections from tracks …")
     EVENT_CLASS_IDS = {
         12: "crash", 13: "penalty_car", 14: "pitstop",
@@ -146,7 +135,7 @@ def main():
         for tid, det in frame_dict.items():
             cls_id = det.get("class_id", 0)
             conf   = det.get("conf", 0.0)
-            if cls_id in EVENT_CLASS_IDS and conf > 0.0:  # skip interpolated
+            if cls_id in EVENT_CLASS_IDS and conf > 0.0: 
                 yolo_events.append({
                     "frame_idx":  fi,
                     "class_id":   cls_id,
@@ -159,7 +148,6 @@ def main():
           f"({sum(1 for e in yolo_events if e['class_name']=='crash')} crash)")
 
 
-    # ── 4a. Track keypoints + homography ──────────────────────────────────────
     kp_frames = {}
     if not args.skip_keypoint:
         print("[4a/7] Track keypoint detection …")
@@ -176,7 +164,6 @@ def main():
     mini_track     = MiniTrack(circuit=args.circuit, keypoints_per_frame=kp_frames)
     car_positions  = mini_track.project_cars(car_tracks)
 
-    # ── 4b. OCR ───────────────────────────────────────────────────────────────
     leaderboard_state = {}
     if not args.skip_ocr:
         print("[4b/7] Parsing broadcast leaderboard (OCR) …")
@@ -187,7 +174,6 @@ def main():
     else:
         print("[4b/7] OCR skipped")
 
-    # ── 5. Analytics ──────────────────────────────────────────────────────────
     print("[5/7] Computing race statistics …")
     stats          = RaceStats(
         car_tracks     = car_tracks,
@@ -211,7 +197,6 @@ def main():
     print(f"       {len(race_events)} race events  |  {len(penalty_events)} penalty events")
 
 
-    # ── 6. Commentary ──────────────────────────────────────────────────────────
     print("[6/7] Generating commentary …")
     cgen             = CommentaryGenerator(hold_frames=args.hold_frames)
     commentary_lines = cgen.generate(
@@ -222,7 +207,6 @@ def main():
     )
     print(f"       {len(commentary_lines)} commentary lines")
 
-    # ── 7. Visualise ──────────────────────────────────────────────────────────
     print("[7/7] Rendering annotated video …")
     all_events = race_events + penalty_events
     out_frames = draw_annotations(
@@ -239,7 +223,6 @@ def main():
     save_video(out_frames, args.output, fps=fps)
 
 
-    # ── Summary ───────────────────────────────────────────────────────────────
     elapsed = time.time() - t0
     print(f"\n── Race Summary ─────────────────────────────────────────")
     for tid, s in sorted(speed_stats.items()):

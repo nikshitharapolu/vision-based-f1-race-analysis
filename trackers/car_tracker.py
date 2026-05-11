@@ -1,10 +1,8 @@
 """
-trackers/car_tracker.py
-========================
+
 YOLOv8 + ByteTrack multi-car tracker.
 
-Analogous to trackers/player_tracker.py in abdullahtarek/tennis_analysis
-but supports up to 20 concurrent objects (full F1 grid) and handles
+Supports up to 20 concurrent objects (full F1 grid) and handles
 the full 21-class schema.
 
 Output format:
@@ -22,7 +20,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# Classes that represent cars on track (not surface/event labels)
+# Classes that represent cars on track 
 CAR_CLASS_IDS   = {0,1,2,3,4,5,6,7,8,9,10}   # car + all team IDs (tracked)
 EVENT_CLASS_IDS = {12,13,14,15,16,17,18}        # crash, penalty, pitstop, flags (detected but not tracked)
 ALL_CLASS_IDS   = CAR_CLASS_IDS | EVENT_CLASS_IDS
@@ -37,7 +35,7 @@ UNIFIED_CLASSES = [
 
 @dataclass
 class CarDetection:
-    bbox:     list[float]   # [x1, y1, x2, y2] pixels
+    bbox:     list[float]   
     conf:     float
     class_id: int
     track_id: int = -1
@@ -60,23 +58,18 @@ class CarTracker:
     """
     Wraps YOLOv8 + ByteTrack to produce persistent car identities.
 
-    Usage:
-        tracker = CarTracker("models/car_detector.pt")
-        tracks  = tracker.get_car_tracks(frames)          # list[dict[int, dict]]
-        # or with stub caching:
-        tracks  = tracker.get_car_tracks(frames, stub_path="stubs/tracks.pkl")
     """
 
     CONF_THRESHOLD  = 0.25
     IOU_THRESHOLD   = 0.45
-    MAX_LOST_FRAMES = 30     # hold a track this many frames without detection
+    MAX_LOST_FRAMES = 30     
 
     def __init__(
         self,
         model_path:  str   = "models/car_detector.pt",
         conf:        float = CONF_THRESHOLD,
         iou:         float = IOU_THRESHOLD,
-        car_only:    bool  = True,   # filter to car-class detections only
+        car_only:    bool  = True,   
         device:      str   = "",
     ):
         self.conf     = conf
@@ -95,7 +88,6 @@ class CarTracker:
             raise ImportError("pip install ultralytics")
         self._model = YOLO(self._model_path)
 
-    # ── Public API ────────────────────────────────────────────────────────────
 
     def get_car_tracks(
         self,
@@ -105,14 +97,13 @@ class CarTracker:
     ) -> list[dict[int, dict]]:
         """
         Run detection + tracking on all frames.
-        If stub_path is given and exists, load from cache instead of running.
+        If stub_path is given and exists, loads from cache instead of running.
 
-        Returns
-        -------
+        Return:
         List[dict[int, dict]]:  one dict per frame mapping
             track_id → {"bbox": [x1,y1,x2,y2], "conf": float, "class_id": int}
         """
-        # ── Stub cache ────────────────────────────────────────────────────────
+        # Stub cache 
         if stub_path:
             stub = Path(stub_path)
             if stub.exists():
@@ -120,7 +111,7 @@ class CarTracker:
                 with open(stub, "rb") as f:
                     return pickle.load(f)
 
-        # ── Detection + tracking ──────────────────────────────────────────────
+        # Detection + tracking 
         self._load_model()
         print(f"  [Tracker] Running YOLOv8 + ByteTrack on {len(frames)} frames …")
 
@@ -133,7 +124,7 @@ class CarTracker:
                 conf      = self.conf,
                 iou       = self.iou,
                 tracker   = "bytetrack.yaml",
-                classes   = list(ALL_CLASS_IDS),   # ← include event classes
+                classes   = list(ALL_CLASS_IDS),   
                 device    = self.device or None,
                 verbose   = False,
             )
@@ -144,7 +135,7 @@ class CarTracker:
         tracks = self._parse_results(raw_results)
         tracks = self._interpolate(tracks)
 
-        # ── Save stub ─────────────────────────────────────────────────────────
+        # Save stub 
         if stub_path:
             Path(stub_path).parent.mkdir(parents=True, exist_ok=True)
             with open(stub_path, "wb") as f:
@@ -153,7 +144,6 @@ class CarTracker:
 
         return tracks
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _parse_results(self, results) -> list[dict[int, dict]]:
         per_frame = []
@@ -162,9 +152,7 @@ class CarTracker:
             if r.boxes is not None and len(r.boxes) > 0:
                 boxes    = r.boxes.xyxy.cpu().numpy()
                 confs    = r.boxes.conf.cpu().numpy()
-                # ids      = r.boxes.id.cpu().numpy().astype(int)
                 cls_ids  = r.boxes.cls.cpu().numpy().astype(int)
-                # IDs only exist for tracked boxes (cars) — events may not have IDs
                 
                 if r.boxes.id is not None:
                     ids = r.boxes.id.cpu().numpy().astype(int)
@@ -185,18 +173,12 @@ class CarTracker:
         tracks:  list[dict[int, dict]],
         max_gap: int = 30,
         ) -> list[dict[int, dict]]:
-        """
-        Linear bbox interpolation for occluded cars.
-        Event classes (crash, flag etc.) are NOT interpolated backwards —
-        only forward from detection point.
-        """
-        # Classes that should never be backdated
+        # Linear bbox interpolation for occluded cars.
         NO_BACKDATE_CLASSES = {12, 13, 14, 15, 16, 17, 18}
 
         all_ids: set[int] = set()
         for fd in tracks:
             all_ids.update(fd.keys())
-
         for tid in all_ids:
             visible = [
             (fi, tracks[fi][tid]["bbox"],
@@ -207,21 +189,16 @@ class CarTracker:
             ]
             if len(visible) < 2:
                 continue
-
             for (f0, b0, cid0, conf0), (f1, b1, cid1, _) in zip(visible, visible[1:]):
                 gap = f1 - f0
                 if 1 < gap <= max_gap:
                     for f in range(f0 + 1, f1):
                         t  = (f - f0) / gap
                         ib = [b0[i] + t * (b1[i] - b0[i]) for i in range(4)]
-
-                        # For event classes, only fill FORWARD from detection
-                        # never backward — prevents early banner triggering
                         interp_cid = cid0
                         if cid0 in NO_BACKDATE_CLASSES:
-                            # Only interpolate forward from f0, not backward to f1
                             if f <= f0 + gap // 2:
-                                continue   # skip frames before midpoint
+                                continue  
                             interp_cid = cid0
 
                         tracks[f][tid] = {
@@ -230,8 +207,6 @@ class CarTracker:
                             "class_id": interp_cid,
                         }
         return tracks
-
-    # ── Utility ───────────────────────────────────────────────────────────────
 
     @staticmethod
     def bbox_centroid(bbox: list[float]) -> tuple[float, float]:
@@ -246,7 +221,7 @@ class CarTracker:
         tracks:  list[dict[int, dict]],
         region:  tuple[int, int, int, int],
     ) -> list[dict[int, dict]]:
-        """Remove detections whose centroid falls inside region (x1,y1,x2,y2)."""
+        # Remove detections whose centroid falls inside region (x1,y1,x2,y2)
         rx1, ry1, rx2, ry2 = region
         filtered = []
         for fd in tracks:
@@ -260,7 +235,6 @@ class CarTracker:
 
     @staticmethod
     def get_class_at_frame(tracks: list[dict], track_id: int) -> int:
-        """Return the most common class_id for a track across all frames."""
         from collections import Counter
         counts = Counter(
             fd[track_id]["class_id"]
@@ -274,14 +248,8 @@ def smooth_class_ids(
     tracks:     list[dict[int, dict]],
     window:     int = 15,
 ) -> list[dict[int, dict]]:
-    """
-    For each track ID, replace per-frame class_id with the most common
-    class_id seen in the last `window` frames. Prevents flickering
-    between team labels caused by lighting/shadow changes.
-    """
     from collections import Counter, defaultdict
 
-    # Build history: {track_id: [class_id, class_id, ...]}
     history: dict[int, list[int]] = defaultdict(list)
 
     smoothed = []
@@ -289,13 +257,11 @@ def smooth_class_ids(
         new_frame = {}
         for tid, det in frame_dict.items():
             cid = det.get("class_id", 0)
-            # Only smooth non-zero class IDs (skip generic "car" class 0)
             if cid > 0:
                 history[tid].append(cid)
-                # Keep only last `window` frames
+                # Keep only last window frames
                 if len(history[tid]) > window:
                     history[tid] = history[tid][-window:]
-                # Use most common class in window
                 most_common = Counter(history[tid]).most_common(1)[0][0]
                 new_det = dict(det)
                 new_det["class_id"] = most_common

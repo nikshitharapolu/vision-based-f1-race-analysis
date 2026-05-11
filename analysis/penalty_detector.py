@@ -1,15 +1,13 @@
 """
-analysis/penalty_detector.py
-=============================
-Detects racing-style penalties by analysing car trajectories,
-relative positions, and flag states over multi-frame windows.
+Detects penalties by analysing car trajectories,  relative positions
+and flag states over multiple frame windows.
 
-Penalty types (per proposal):
-  TRACK_LIMIT_VIOLATION — all 4 wheels outside white line
-  PUSHING_OFF_TRACK     — side-by-side → one car deviates off track
-  UNFAIR_OVERTAKE       — overtake gained while off-track or under yellow
-  WEAVING               — more than one lateral direction change defending
-  PIT_LANE_SPEEDING     — speed > threshold while in pit zone
+Penalty types:
+  TRACK_LIMIT_VIOLATION 
+  PUSHING_OFF_TRACK     
+  UNFAIR_OVERTAKE       
+  WEAVING               
+  PIT_LANE_SPEEDING 
 """
 
 from __future__ import annotations
@@ -33,29 +31,28 @@ class PenaltyEvent:
     frame_idx: int
     car_id:    int
     details:   dict[str, Any] = field(default_factory=dict)
-    severity:  str = "investigation"   # "investigation" | "penalty" | "warning"
+    severity:  str = "investigation"  
 
     def __str__(self) -> str:
         return (f"{self.type.name:<26}  Car {self.car_id}"
                 f"  [{self.severity}]  frame={self.frame_idx}")
 
 
-# ── Constants ─────────────────────────────────────────────────────────────────
 
-PIT_SPEED_LIMIT_KMH      = 80.0    # standard F1 pit lane speed limit
-TRACK_LIMIT_MARGIN_M     = 1.5     # allowance beyond track edge (metres)
-WEAVE_ANGLE_THRESHOLD    = 30.0    # degrees: direction reversal counts as weave
-WEAVE_WINDOW_FRAMES  = 90      # longer window — reduces false positives
-MIN_WEAVE_SPEED_KMH  = 150.0   # only flag weaving at high speed (on straights)
-PUSH_PROXIMITY_M         = 4.0     # cars must be this close to register a push
-PUSH_DEVIATION_M         = 3.0     # off-track deviation needed to flag a push
-YELLOW_FLAG_CLASS_ID     = 17      # per UNIFIED_CLASSES
+PIT_SPEED_LIMIT_KMH      = 80.0    
+TRACK_LIMIT_MARGIN_M     = 1.5     
+WEAVE_ANGLE_THRESHOLD    = 30.0    
+WEAVE_WINDOW_FRAMES  = 90     
+MIN_WEAVE_SPEED_KMH  = 150.0   
+PUSH_PROXIMITY_M         = 4.0    
+PUSH_DEVIATION_M         = 3.0     
+YELLOW_FLAG_CLASS_ID     = 17     
 OFF_TRACK_CLASS_ID       = 19
 
 
 class PenaltyDetector:
     """
-    Detects racing-style penalties from track positions, speeds, and YOLO events.
+    Detects penalties from track positions, speeds and YOLO events.
 
     Takes the output of RaceStats.compute_speeds() and
     MiniTrack.car_positions as input.
@@ -63,7 +60,7 @@ class PenaltyDetector:
 
     def __init__(
         self,
-        car_positions:   dict[int, list],    # tid → list[TrackCoord]
+        car_positions:   dict[int, list], 
         car_speeds:      dict[int, list[float]],
         yolo_detections: list[dict] | None = None,
         mini_track=      None,
@@ -79,13 +76,11 @@ class PenaltyDetector:
              if coords), default=0
         ) + 1
 
-        # Pre-index YOLO detections by frame
         self._yolo_by_frame: dict[int, list[dict]] = {}
         for d in self.yolo_dets:
             fi = d.get("frame_idx", 0)
             self._yolo_by_frame.setdefault(fi, []).append(d)
 
-    # ── Public API ────────────────────────────────────────────────────────────
 
     def detect_all(self) -> list[PenaltyEvent]:
         events: list[PenaltyEvent] = []
@@ -97,7 +92,7 @@ class PenaltyDetector:
         events.sort(key=lambda e: e.frame_idx)
         return events
 
-    # ── Pit lane speeding ─────────────────────────────────────────────────────
+    # Pit lane speeding 
 
     def detect_pit_speeding(self) -> list[PenaltyEvent]:
         events = []
@@ -120,7 +115,7 @@ class PenaltyDetector:
                     ))
         return self._deduplicate(events, cooldown=60)
 
-    # ── Weaving / defending ───────────────────────────────────────────────────
+    # Weaving/defending 
 
     def detect_weaving(self) -> list[PenaltyEvent]:
         events = []
@@ -136,14 +131,13 @@ class PenaltyDetector:
                 last_dir = None
                 for j in range(1, len(xs)):
                     dx = xs[j] - xs[j-1]
-                    if abs(dx) < 0.3:   # ignore micro-jitter
+                    if abs(dx) < 0.3:  
                         continue
                     this_dir = "right" if dx > 0 else "left"
                     if last_dir and this_dir != last_dir:
                         changes += 1
                     last_dir = this_dir
                 if changes >= 2:
-                    # Only flag weaving at high speed — eliminates corner false positives
                     spd = self.car_speeds.get(tid, [])
                     avg_spd = 0.0
                     if fis[i] < len(spd):
@@ -155,7 +149,7 @@ class PenaltyDetector:
 
                     if avg_spd < 150.0:
                         i += 10
-                        continue   # skip — likely cornering, not weaving
+                        continue  
 
                     events.append(PenaltyEvent(
                         type      = PenaltyType.WEAVING,
@@ -171,13 +165,9 @@ class PenaltyDetector:
                     i += 10
         return events
 
-    # ── Pushing off track ─────────────────────────────────────────────────────
+    # Pushing off track 
 
     def detect_pushing_off_track(self) -> list[PenaltyEvent]:
-        """
-        Detect when two cars are side-by-side and one subsequently goes
-        off-track — suggests the other was pushed.
-        """
         events = []
         tids   = list(self.car_positions.keys())
         frame_to_pos: dict[int, dict[int, tuple]] = {}
@@ -195,7 +185,6 @@ class PenaltyDetector:
                     dist = float(np.linalg.norm(pa - pb))
                     if dist > PUSH_PROXIMITY_M:
                         continue
-                    # Check if either car goes off-track shortly after
                     off_track_car = self._went_off_track(fi, a, b, frame_to_pos)
                     if off_track_car is not None:
                         pusher = b if off_track_car == a else a
@@ -213,12 +202,11 @@ class PenaltyDetector:
         frame_to_pos: dict[int, dict[int, tuple]],
         lookahead: int = 30,
     ) -> int | None:
-        """Return car_id that went off-track within lookahead frames, or None."""
         # Look for YOLO off_track detection
         for look_fi in range(fi, min(fi + lookahead, self._n_frames)):
             for det in self._yolo_by_frame.get(look_fi, []):
                 if det.get("class_id") == OFF_TRACK_CLASS_ID:
-                    # Which car is closest to this detection?
+                    # Car closest to this detection
                     det_cx = det.get("cx", 0.5)
                     det_cy = det.get("cy", 0.5)
                     at = frame_to_pos.get(look_fi, {})
@@ -227,18 +215,12 @@ class PenaltyDetector:
                             return cid
         return None
 
-    # ── Unfair overtake ───────────────────────────────────────────────────────
+    # Unfair overtake 
 
     def detect_unfair_overtakes(self) -> list[PenaltyEvent]:
-        """
-        Overtake is flagged as potentially unfair when:
-         - It occurs while a yellow flag is active, OR
-         - The overtaking car is simultaneously off-track
-        """
         events = []
         from analysis.race_stats import RaceStats, EventType
 
-        # Build running order to find overtake frames
         frame_to_pos: dict[int, dict[int, tuple]] = {}
         for tid, coords in self.car_positions.items():
             for c in coords:
@@ -284,19 +266,15 @@ class PenaltyDetector:
                             ))
         return self._deduplicate(events, cooldown=60)
 
-    # ── Track limit violations ────────────────────────────────────────────────
+    # Track limit violations
 
     def detect_track_limit_violations(self) -> list[PenaltyEvent]:
-        """
-        Flags cars where YOLO detects off_track while also going fast
-        (distinguishes racing off-track from pit lane).
-        """
+
         events = []
         for fi, dets in self._yolo_by_frame.items():
             for d in dets:
                 if d.get("class_id") != OFF_TRACK_CLASS_ID:
                     continue
-                # Match to a tracked car by proximity (rough)
                 tid  = d.get("track_id")
                 spd  = 0.0
                 if tid is not None:
@@ -313,14 +291,14 @@ class PenaltyDetector:
                     ))
         return self._deduplicate(events, cooldown=30)
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # Helpers 
 
     @staticmethod
     def _deduplicate(
         events: list[PenaltyEvent],
         cooldown: int = 60,
     ) -> list[PenaltyEvent]:
-        """Remove duplicate events (same type + car) within cooldown frames."""
+        # Remove duplicate events (same type + car) within cooldown frames
         last: dict[tuple, int] = {}
         out  = []
         for ev in sorted(events, key=lambda e: e.frame_idx):

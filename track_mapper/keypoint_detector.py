@@ -1,11 +1,5 @@
 """
-track_mapper/keypoint_detector.py
-===================================
-ResNet-50 CNN that regresses 2D image coords of stable track landmarks,
-then computes a homography H mapping image → real-world track coordinates.
-
-Analogous to court_line_detector/ in abdullahtarek/tennis_analysis.
-
+ResNet-50 CNN to regresses 2D image coords of stable track landmarks
 Landmark examples for Silverstone GP camera 1:
   0  pit lane entry line, left edge
   1  pit lane entry line, right edge
@@ -23,7 +17,6 @@ import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
 
-# ── Circuit definitions ───────────────────────────────────────────────────────
 
 CIRCUIT_KEYPOINTS: dict[str, int] = {
     "silverstone": 8,
@@ -33,8 +26,6 @@ CIRCUIT_KEYPOINTS: dict[str, int] = {
     "default":     8,
 }
 
-# Real-world top-down coordinates (metres) for each landmark
-# These define the canonical circuit map each homography maps to
 CIRCUIT_WORLD_COORDS: dict[str, list[list[float]]] = {
     "silverstone": [
         [  0.0,   0.0],  # 0  pit entry left
@@ -53,8 +44,8 @@ CIRCUIT_WORLD_COORDS["default"] = CIRCUIT_WORLD_COORDS["silverstone"]
 @dataclass
 class KeypointResult:
     frame_idx:  int
-    keypoints:  np.ndarray   # (N, 2) normalised image coords [0,1]
-    homography: np.ndarray   # 3×3 H matrix (image → world)
+    keypoints:  np.ndarray   
+    homography: np.ndarray   
     valid:      bool = True
 
 
@@ -62,9 +53,6 @@ class KeypointDetector:
     """
     ResNet-50 regression head predicting N landmark coords per frame.
     Computes homography from predicted landmarks + known world coords.
-
-    Training target: (N*2,) vector of normalised (x, y) landmark coords.
-    Loss: MSE over normalised coords.
     """
 
     IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -103,7 +91,6 @@ class KeypointDetector:
         self._device = torch.device(
             self._device_str or ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        # Build ResNet-50 with regression head
         m     = models.resnet50(weights="IMAGENET1K_V2")
         m.fc  = nn.Linear(m.fc.in_features, self.n_kp * 2)
         if self._model_path and Path(self._model_path).exists():
@@ -111,7 +98,6 @@ class KeypointDetector:
             m.load_state_dict(state)
         m.to(self._device).eval()
         self._model = m
-
         import torchvision.transforms as T
         self._transform = T.Compose([
             T.ToPILImage(),
@@ -120,8 +106,6 @@ class KeypointDetector:
             T.Normalize(mean=self.IMAGENET_MEAN, std=self.IMAGENET_STD),
         ])
 
-    # ── Public API ────────────────────────────────────────────────────────────
-
     def detect(self, frame: np.ndarray, frame_idx: int = 0) -> KeypointResult:
         """Detect keypoints in a single BGR frame."""
         self._load()
@@ -129,7 +113,7 @@ class KeypointDetector:
         H, W = frame.shape[:2]
         inp  = self._transform(frame).unsqueeze(0).to(self._device)
         with torch.no_grad():
-            pred = self._model(inp).cpu().numpy().reshape(-1, 2)  # (N, 2) normalised
+            pred = self._model(inp).cpu().numpy().reshape(-1, 2) 
         kp_pixels = pred * np.array([W, H], dtype=np.float32)
         hom       = self._compute_homography(kp_pixels)
         return KeypointResult(
@@ -144,7 +128,6 @@ class KeypointDetector:
         frames: list[np.ndarray],
         stride: int = 30,
     ) -> dict[int, KeypointResult]:
-        """Detect every `stride` frames. Returns {frame_idx: KeypointResult}."""
         results = {}
         for i in range(0, len(frames), stride):
             results[i] = self.detect(frames[i], frame_idx=i)
@@ -155,7 +138,7 @@ class KeypointDetector:
         frame_idx:      int,
         keypoint_frames: dict[int, KeypointResult],
     ) -> np.ndarray:
-        """Return the nearest valid homography for a given frame index."""
+        #Return the nearest valid homography for a given frame index.
         if frame_idx in keypoint_frames and keypoint_frames[frame_idx].valid:
             return keypoint_frames[frame_idx].homography
         candidates = [
@@ -168,7 +151,6 @@ class KeypointDetector:
         _, nearest = min(candidates)
         return keypoint_frames[nearest].homography
 
-    # ── Training helper ───────────────────────────────────────────────────────
 
     @staticmethod
     def train(
@@ -179,7 +161,7 @@ class KeypointDetector:
         save_path:       str   = "models/keypoint_cnn.pth",
     ) -> None:
         """
-        Fine-tune the ResNet-50 keypoint regressor.
+        Fine-tune the ResNet-50 keypoint regressor
         Annotation JSON format:
           {"image": "frame.jpg", "keypoints": [[x1,y1], [x2,y2], ...]}
         """
@@ -243,7 +225,6 @@ class KeypointDetector:
         torch.save(m.state_dict(), save_path)
         print(f"  Saved keypoint model → {save_path}")
 
-    # ── Internal ──────────────────────────────────────────────────────────────
 
     def _compute_homography(self, kp_pixels: np.ndarray) -> np.ndarray | None:
         try:

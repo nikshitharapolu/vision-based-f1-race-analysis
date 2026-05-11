@@ -1,22 +1,12 @@
 """
-utils/audio_commentary.py
-==========================
+Future scope
+
 Converts commentary text lines to speech and mixes them into the output video.
 
 Three TTS backends (in order of quality):
   1. gTTS  — Google Text-to-Speech (best quality, needs internet)
   2. pyttsx3 — offline, uses system voices (good, no internet)
   3. say    — macOS built-in (fallback, British voice available)
-
-Usage:
-    from utils.audio_commentary import add_audio_commentary
-    add_audio_commentary(
-        video_path       = "output_videos/result.mp4",
-        commentary_lines = [(frame_start, frame_end, text), ...],
-        output_path      = "output_videos/result_with_audio.mp4",
-        fps              = 30.0,
-        voice_backend    = "gtts",   # "gtts" | "pyttsx3" | "say"
-    )
 """
 
 import os
@@ -25,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 
-# ── Backend: Google TTS (best quality) ───────────────────────────────────────
+# Backend: Google TTS 
 
 def _tts_gtts(text: str, out_path: str, lang: str = "en") -> bool:
     try:
@@ -38,18 +28,17 @@ def _tts_gtts(text: str, out_path: str, lang: str = "en") -> bool:
         return False
 
 
-# ── Backend: pyttsx3 (offline) ────────────────────────────────────────────────
+#  Backend: pyttsx3 (offline) 
 
 def _tts_pyttsx3(text: str, out_path: str) -> bool:
     try:
         import pyttsx3
         engine = pyttsx3.init()
-        # Use a British English voice if available (more F1-like)
         for voice in engine.getProperty("voices"):
             if "british" in voice.name.lower() or "daniel" in voice.name.lower():
                 engine.setProperty("voice", voice.id)
                 break
-        engine.setProperty("rate", 165)    # slightly faster than default
+        engine.setProperty("rate", 165)   
         engine.setProperty("volume", 1.0)
         engine.save_to_file(text, out_path)
         engine.runAndWait()
@@ -59,11 +48,9 @@ def _tts_pyttsx3(text: str, out_path: str) -> bool:
         return False
 
 
-# ── Backend: macOS say (fallback) ─────────────────────────────────────────────
 
 def _tts_say(text: str, out_path: str, voice: str = "Daniel") -> bool:
     try:
-        # Daniel = British English, Samantha = American
         cmd = ["say", "-v", voice, "-o", out_path, "--data-format=LEF32@44100", text]
         subprocess.run(cmd, check=True, capture_output=True)
         # Convert to mp3 for ffmpeg compatibility
@@ -79,14 +66,14 @@ def _tts_say(text: str, out_path: str, voice: str = "Daniel") -> bool:
         return False
 
 
-# ── Generate speech file for one line ────────────────────────────────────────
+#  Generate speech file for one line 
 
 def text_to_speech(
     text:        str,
     out_path:    str,
     backend:     str = "gtts",
 ) -> bool:
-    """Convert text to a speech audio file. Returns True on success."""
+    #Convert text to a speech audio file. Returns True on success
     if backend == "gtts":
         return _tts_gtts(text, out_path)
     elif backend == "pyttsx3":
@@ -99,7 +86,6 @@ def text_to_speech(
         return False
 
 
-# ── Build ffmpeg filter for mixing all speech clips ───────────────────────────
 
 def add_audio_commentary(
     video_path:       str,
@@ -110,7 +96,7 @@ def add_audio_commentary(
     keep_original_audio: bool = True,
 ) -> bool:
     """
-    Main function — generates TTS for each commentary line and
+    Generates TTS for each commentary line and
     mixes them into the video at the correct timestamps.
 
     Args:
@@ -121,7 +107,6 @@ def add_audio_commentary(
         voice_backend:    "gtts" | "pyttsx3" | "say"
         keep_original_audio: mix with existing video audio if True
 
-    Returns True on success.
     """
     if not commentary_lines:
         print("  [Audio] No commentary lines — copying video as-is")
@@ -129,7 +114,6 @@ def add_audio_commentary(
         shutil.copy2(video_path, output_path)
         return True
 
-    # Check ffmpeg is available
     try:
         subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -145,7 +129,7 @@ def add_audio_commentary(
         for i, (f_start, f_end, text) in enumerate(commentary_lines):
             if not text.strip():
                 continue
-            t_start = f_start / fps   # seconds
+            t_start = f_start / fps   
             speech_path = str(tmp / f"speech_{i:04d}.mp3")
             ok = text_to_speech(text, speech_path, backend=voice_backend)
             if ok and Path(speech_path).exists():
@@ -159,20 +143,16 @@ def add_audio_commentary(
             return False
 
         # Build ffmpeg command to mix all clips
-        # Each speech clip is placed at its timestamp using adelay
         print(f"  [Audio] Mixing {len(speech_files)} clips into video …")
 
         cmd = ["ffmpeg", "-y"]
 
-        # Input 0: the video
         cmd += ["-i", video_path]
 
         # Inputs 1..N: speech audio files
         for _, sp, _ in speech_files:
             cmd += ["-i", sp]
 
-        # Build filter_complex
-        # Delay each speech clip to its start time, then mix everything
         n = len(speech_files)
         filter_parts = []
 
@@ -181,13 +161,10 @@ def add_audio_commentary(
             filter_parts.append(
                 f"[{i+1}:a]adelay={delay_ms}|{delay_ms},volume=2.0[s{i}]"
             )
-
-        # Mix all speech clips together
         speech_inputs = "".join(f"[s{i}]" for i in range(n))
         filter_parts.append(f"{speech_inputs}amix=inputs={n}:duration=longest:dropout_transition=0[speech]")
 
         if keep_original_audio:
-            # Try to mix with original video audio
             filter_parts.append("[0:a][speech]amix=inputs=2:duration=first:weights=1 2[aout]")
             audio_out = "[aout]"
         else:
@@ -202,7 +179,6 @@ def add_audio_commentary(
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                # Video may have no audio track — retry without mixing original audio
                 print("  [Audio] Retrying without original audio track …")
                 filter_parts_clean = []
                 for i, (t_start, _, _) in enumerate(speech_files):

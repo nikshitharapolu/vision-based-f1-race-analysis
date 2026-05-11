@@ -1,16 +1,14 @@
 """
-training/train_detector.py
-===========================
 Complete training pipeline for the F1 Race Analysis project.
 
-Covers:
+
   1. Dataset verification   — checks images, labels, class counts before training
   2. YOLOv8 fine-tuning     — trains the car/event detector on merged dataset
   3. Evaluation             — mAP@0.5, per-class AP, confusion matrix
-  4. Keypoint CNN training  — trains the track landmark regression model
+  4. Keypoint CNN training  — trains the track landmark regression model  --Future scope
 
-Usage:
-    # Step 1 — verify dataset first (always run this before training)
+  
+    # Step 1 — verify dataset first 
     python training/train_detector.py --verify --data roboflow_dataset/data.yaml
 
     # Step 2 — train the car detector
@@ -30,8 +28,6 @@ Usage:
     # Resume interrupted training
     python training/train_detector.py --data roboflow_dataset/data.yaml --resume
 
-Requirements:
-    pip install ultralytics torch torchvision opencv-python numpy pyyaml
 """
 
 import argparse
@@ -41,7 +37,6 @@ import time
 from collections import Counter
 from pathlib import Path
 
-# ── Class schema — must match roboflow_dataset/data.yaml ─────────────────────
 
 UNIFIED_CLASSES = [
     "car",           # 0
@@ -67,7 +62,7 @@ UNIFIED_CLASSES = [
     "on_track",      # 20
 ]
 
-# ── YOLOv8 training hyperparameters ──────────────────────────────────────────
+# YOLOv8 training hyperparameters 
 
 TRAIN_CFG = dict(
     epochs        = 100,
@@ -79,36 +74,34 @@ TRAIN_CFG = dict(
     weight_decay  = 0.0005,
     warmup_epochs = 3,
     patience      = 30,          # early stopping — stops if no improvement
-    # Augmentation (matched to F1 broadcast footage characteristics)
     mosaic        = 1.0,         # 4-image mosaic (YOLOv8 native)
     mixup         = 0.1,
     copy_paste    = 0.1,
-    flipud        = 0.0,         # cars don't appear upside-down
-    fliplr        = 0.5,         # horizontal flip is valid
-    degrees       = 2.0,         # slight rotation tolerance
+    flipud        = 0.0,        
+    fliplr        = 0.5,         
+    degrees       = 2.0,        
     translate     = 0.1,
     scale         = 0.5,
     hsv_h         = 0.030,
     hsv_s         = 0.90,
     hsv_v         = 0.60,
-    # Output
+    
     save          = True,
-    plots         = True,        # generates training curves, confusion matrix
+    plots         = True,        
     verbose       = True,
-    save_period   = 10,          # save checkpoint every N epochs
-    auto_augment = "randaugment",   # random augmentation policy
-    erasing      = 0.40,            # random erasing (simulates occlusion/shadow patches)
+    save_period   = 10,         
+    auto_augment = "randaugment",   
+    erasing      = 0.40,            
     
 )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STEP 1 — DATASET VERIFICATION
+#  DATASET VERIFICATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 def verify_dataset(data_yaml: str) -> bool:
     """
-    Check the dataset for common issues before wasting GPU time on training.
     Returns True if dataset looks healthy, False if critical issues found.
     """
     try:
@@ -184,15 +177,12 @@ def verify_dataset(data_yaml: str) -> bool:
         if bad_labels:
             print(f"     Bad lines   : {bad_labels}  [WARN]")
             issues += bad_labels
-
-        # Check for images without labels
         img_stems = {f.stem for f in images}
         lbl_stems = {f.stem for f in labels}
         missing   = img_stems - lbl_stems
         if missing:
             print(f"     No label    : {len(missing)} images have no .txt file")
 
-        # Per-class distribution
         total_boxes = sum(class_counts.values())
         if total_boxes > 0:
             print(f"     Total boxes : {total_boxes}")
@@ -209,7 +199,7 @@ def verify_dataset(data_yaml: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STEP 2 — YOLOV8 TRAINING
+#  YOLOV8 TRAINING
 # ══════════════════════════════════════════════════════════════════════════════
 
 def train(args) -> None:
@@ -217,8 +207,6 @@ def train(args) -> None:
         from ultralytics import YOLO
     except ImportError:
         raise ImportError("pip install ultralytics")
-
-    # Build config from defaults + CLI overrides
     cfg = dict(TRAIN_CFG)
     cfg["epochs"] = 5 if args.smoke else args.epochs
     cfg["batch"]  = args.batch
@@ -253,7 +241,6 @@ def train(args) -> None:
     )
     elapsed = time.time() - t0
 
-    # Copy best weights to models/ for easy reference
     best = Path(args.project) / args.name / "weights" / "best.pt"
     if best.exists():
         Path("models").mkdir(exist_ok=True)
@@ -268,7 +255,7 @@ def train(args) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STEP 3 — COMPREHENSIVE EVALUATION
+#  COMPREHENSIVE EVALUATION
 # ══════════════════════════════════════════════════════════════════════════════
 
 def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
@@ -277,7 +264,7 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
     Full evaluation suite:
       - Overall: mAP@0.5, mAP@0.5:0.95, Precision, Recall, F1
       - Per-class: Precision, Recall, F1, AP@0.5, AP@0.5:0.95
-      - Confusion matrix (printed as text + saved as image)
+      - Confusion matrix 
       - Accuracy estimate (TP / total predictions)
       - Summary: best/worst classes, macro/weighted averages
       - Saves full report to runs/detect/eval_report.txt
@@ -306,29 +293,24 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
         conf    = conf,
         iou     = iou,
         verbose = False,
-        plots   = True,     # saves confusion_matrix.png, PR curve etc.
+        plots   = True,    
     )
 
     box = metrics.box
 
-    # ── 1. Overall metrics ────────────────────────────────────────────────────
-    P       = float(box.mp)                  # mean precision
-    R       = float(box.mr)                  # mean recall
-    F1      = 2 * P * R / (P + R + 1e-9)    # macro F1
+    # Overall metrics 
+    P       = float(box.mp)                  
+    R       = float(box.mr)                  
+    F1      = 2 * P * R / (P + R + 1e-9)  
     mAP50   = float(box.map50)
     mAP5095 = float(box.map)
 
-    # Accuracy ≈ TP / (TP + FP) at the chosen confidence threshold
-    # YOLOv8 metrics object exposes these via box.p, box.r arrays
     TP_total = 0.0
     FP_total = 0.0
     FN_total = 0.0
     if hasattr(box, "p") and box.p is not None and len(box.p) > 0:
-        # box.p / box.r are per-class arrays at best F1 threshold
         per_p = np.array(box.p,  dtype=float)
         per_r = np.array(box.r,  dtype=float)
-        # Reconstruct TP/FP/FN counts from P & R
-        # P = TP/(TP+FP), R = TP/(TP+FN)  → use AP-weighted counts estimate
         per_ap50 = np.array(box.ap50, dtype=float) if hasattr(box, "ap50") else per_p
         TP_total  = per_r.sum()
         FP_total  = (1 - per_p + 1e-9).sum()
@@ -348,7 +330,6 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
     print(f"  {'Accuracy (approx)':<28} {accuracy:>10.4f}  {'TP / (TP+FP) at conf={conf}'}")
     print()
 
-    # ── 2. Per-class breakdown ────────────────────────────────────────────────
     if hasattr(box, "ap_class_index") and box.ap_class_index is not None and len(box.ap_class_index) > 0:
 
         cls_indices = list(box.ap_class_index)
@@ -378,7 +359,6 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
             class_rows.append((cls_name, p_i, r_i, f1_i, ap50, ap))
             print(f"  {cls_name:<18} {p_i:>7.4f} {r_i:>7.4f} {f1_i:>7.4f} {ap50:>7.4f} {ap:>8.4f}  {bar}")
 
-        # ── 3. Macro & weighted averages ──────────────────────────────────────
         n = len(class_rows)
         if n > 0:
             macro_p  = sum(r[1] for r in class_rows) / n
@@ -388,7 +368,6 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
             print(f"  {SEP}")
             print(f"  {'MACRO AVERAGE':<18} {macro_p:>7.4f} {macro_r:>7.4f} {macro_f1:>7.4f} {macro_ap:>7.4f}")
 
-        # ── 4. Best / worst classes ───────────────────────────────────────────
         sorted_by_f1 = sorted(class_rows, key=lambda x: x[3], reverse=True)
         print(f"\n  TOP 5 CLASSES BY F1:")
         for row in sorted_by_f1[:5]:
@@ -397,12 +376,10 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
         for row in sorted_by_f1[-5:]:
             print(f"    {row[0]:<18}  F1={row[3]:.4f}  AP@50={row[4]:.4f}")
 
-    # ── 5. Confusion matrix (text) ────────────────────────────────────────────
     print(f"\n  CONFUSION MATRIX")
     print(f"  Saved as image → runs/detect/val/confusion_matrix.png")
     print(f"  (YOLOv8 --plots=True generates this automatically)")
 
-    # ── 6. Threshold analysis — P/R trade-off ────────────────────────────────
     print(f"\n  THRESHOLD GUIDANCE")
     print(f"  {SEP}")
     print(f"  Current conf={conf} gives P={P:.4f}, R={R:.4f}, F1={F1:.4f}")
@@ -415,7 +392,6 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
     else:
         print(f"  → Low F1: consider more training data for underperforming classes.")
 
-    # ── 7. Grade ──────────────────────────────────────────────────────────────
     grade = ("A — Production ready" if mAP50 >= 0.80 else
              "B — Good, minor improvements needed" if mAP50 >= 0.65 else
              "C — Acceptable, add data for weak classes" if mAP50 >= 0.50 else
@@ -425,7 +401,7 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
     print(f"    confusion_matrix.png  PR_curve.png  F1_curve.png  R_curve.png")
     print(f"{SEP2}\n")
 
-    # ── 8. Save text report ───────────────────────────────────────────────────
+    # Save text report 
     if save_report:
         import datetime
         report_dir = Path("runs/detect/val")
@@ -463,7 +439,7 @@ def evaluate(weights: str, data: str, imgsz: int = 640, split: str = "test",
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  STEP 4 — KEYPOINT CNN TRAINING (track landmark regression)
+#  KEYPOINT CNN TRAINING 
 # ══════════════════════════════════════════════════════════════════════════════
 
 def train_keypoint(annotations_dir: str, circuit: str = "default",
@@ -471,17 +447,6 @@ def train_keypoint(annotations_dir: str, circuit: str = "default",
                    save_path: str = "models/keypoint_cnn.pth") -> None:
     """
     Fine-tune a ResNet-50 to regress track landmark coordinates.
-
-    Annotation JSON format (one file per image):
-        {
-          "image": "frame_00123.jpg",
-          "keypoints": [[x1,y1], [x2,y2], ...]   // pixel coords
-        }
-
-    Create annotations using Roboflow Annotate or CVAT:
-      - Open each broadcast frame
-      - Click on each of the 8 stable track landmarks in order
-      - Export as JSON to dataset/keypoints/
     """
     try:
         import torch
@@ -540,7 +505,7 @@ def train_keypoint(annotations_dir: str, circuit: str = "default",
             img_path, kps = self.records[i]
             img   = PILImage.open(img_path).convert("RGB")
             w, h  = img.size
-            kps_n = kps / np.array([w, h], dtype=np.float32)  # normalise to [0,1]
+            kps_n = kps / np.array([w, h], dtype=np.float32)  # normalise 
             return self.tf(img), torch.tensor(kps_n.flatten(), dtype=torch.float32)
 
     # Split 80/20
@@ -581,7 +546,7 @@ def train_keypoint(annotations_dir: str, circuit: str = "default",
 
         print(f"  Epoch {ep+1:>3}/{epochs}  train={train_loss:.6f}  val={val_loss:.6f}")
 
-        # Save best
+        # Save best epoch
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             Path(save_path).parent.mkdir(parents=True, exist_ok=True)
@@ -620,7 +585,6 @@ Examples:
         """
     )
 
-    # Mode flags
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--verify",          action="store_true",
                       help="Verify dataset integrity only (recommended before training)")
@@ -692,7 +656,7 @@ def main():
         )
 
     else:
-        # Full training flow: verify → train → evaluate
+        # verify -> train -> evaluate
         print("Running dataset verification before training …")
         ok = verify_dataset(args.data)
         if not ok and not args.smoke:

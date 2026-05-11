@@ -1,34 +1,5 @@
 """
 F1 Dataset — Class-Filtered Bounding Box Visualizer
-=====================================================
-Search your dataset by class name or ID and display all matching images
-with their bounding boxes drawn. Results are shown in an OpenCV window
-and optionally saved as a contact-sheet grid image.
-
-Usage:
-    # Show all crash images
-    python visualize_class.py --class crash
-
-    # Show all Ferrari images
-    python visualize_class.py --class Ferrari
-
-    # Show multiple classes at once
-    python visualize_class.py --class crash penalty_car
-
-    # Show class 12 (crash) by ID
-    python visualize_class.py --class-id 12
-
-    # Save results as a grid image instead of opening a window
-    python visualize_class.py --class crash --save
-
-    # Search val split, limit to 20 images
-    python visualize_class.py --class pitstop --split val --max 20
-
-    # List all available classes in the dataset
-    python visualize_class.py --list-classes
-
-Requirements:
-    pip install opencv-python numpy
 """
 
 import argparse
@@ -38,10 +9,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CLASS SCHEMA  — must match your data.yaml
-# ══════════════════════════════════════════════════════════════════════════════
 
 CLASS_NAMES: dict[int, str] = {
     0:  "car",
@@ -64,8 +31,6 @@ CLASS_NAMES: dict[int, str] = {
     17: "yellow_flag",
     18: "safety_car",
 }
-
-# Visually distinct BGR colours per class
 CLASS_COLORS: dict[int, tuple] = {
     0:  (200, 200, 200),  # car          — white/grey
     1:  (255,  30,  30),  # RedBull      — blue
@@ -96,11 +61,6 @@ def get_color(cls_id: int) -> tuple:
 def get_name(cls_id: int) -> str:
     return CLASS_NAMES.get(cls_id, f"class_{cls_id}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  LOAD DATA.YAML  (overrides CLASS_NAMES if present)
-# ══════════════════════════════════════════════════════════════════════════════
-
 def load_yaml_classes(dataset_dir: Path) -> None:
     yaml_path = dataset_dir / "data.yaml"
     if not yaml_path.exists():
@@ -117,12 +77,6 @@ def load_yaml_classes(dataset_dir: Path) -> None:
                 CLASS_NAMES[int(k)] = v
     except Exception:
         pass
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  RESOLVE CLASS NAMES → IDs
-# ══════════════════════════════════════════════════════════════════════════════
-
 def resolve_class_ids(names: list[str]) -> list[int]:
     """
     Convert a list of class name strings to integer IDs.
@@ -142,11 +96,6 @@ def resolve_class_ids(names: list[str]) -> list[int]:
             sys.exit(1)
     return ids
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SCAN DATASET — find images containing target classes
-# ══════════════════════════════════════════════════════════════════════════════
-
 def find_images_with_classes(
     dataset_dir: Path,
     target_ids:  set[int],
@@ -155,13 +104,8 @@ def find_images_with_classes(
 ) -> list[tuple[Path, Path, list[dict]]]:
     """
     Scan split labels for boxes belonging to target_ids.
-
-    Returns list of (image_path, label_path, matching_boxes) where
-    matching_boxes is a list of {"cls", "cx", "cy", "w", "h"} dicts
-    for boxes that belong to a target class (all other boxes also loaded
-    for context but flagged differently).
+    Returns list of (image_path, label_path, matching_boxes) 
     """
-    # Locate images dir
     candidates = [
         dataset_dir / split / "images",
         dataset_dir / "images",
@@ -213,11 +157,6 @@ def find_images_with_classes(
 
     return results
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  DRAW BOXES ON IMAGE
-# ══════════════════════════════════════════════════════════════════════════════
-
 def draw_boxes(
     image:       np.ndarray,
     boxes:       list[dict],
@@ -225,15 +164,8 @@ def draw_boxes(
     show_all:    bool = True,
     fill_alpha:  float = 0.22,
 ) -> np.ndarray:
-    """
-    Draw bounding boxes on image.
-    Target class boxes: solid colour + filled + label.
-    Other class boxes: thin grey outline only (for spatial context).
-    """
     out  = image.copy()
     H, W = out.shape[:2]
-
-    # Draw non-target boxes first (background context, thin grey)
     if show_all:
         for box in boxes:
             if box["cls"] in target_ids:
@@ -243,30 +175,21 @@ def draw_boxes(
             x2 = int((box["cx"] + box["w"] / 2) * W)
             y2 = int((box["cy"] + box["h"] / 2) * H)
             cv2.rectangle(out, (x1, y1), (x2, y2), (90, 90, 90), 1)
-
-    # Draw target class boxes on top (highlighted)
     for box in boxes:
         if box["cls"] not in target_ids:
             continue
 
         color = get_color(box["cls"])
         name  = get_name(box["cls"])
-
         x1 = max(0, int((box["cx"] - box["w"] / 2) * W))
         y1 = max(0, int((box["cy"] - box["h"] / 2) * H))
         x2 = min(W - 1, int((box["cx"] + box["w"] / 2) * W))
         y2 = min(H - 1, int((box["cy"] + box["h"] / 2) * H))
-
-        # Semi-transparent fill
         if x2 > x1 and y2 > y1:
             overlay = out.copy()
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
             cv2.addWeighted(overlay, fill_alpha, out, 1 - fill_alpha, 0, out)
-
-        # Solid border (thick)
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-
-        # Label pill
         label      = f"{box['cls']}: {name}"
         font       = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = max(0.4, min(0.7, W / 800))
@@ -292,7 +215,6 @@ def add_info_bar(
     idx:        int,
     total:      int,
 ) -> np.ndarray:
-    """Add a dark info bar at the bottom of the image."""
     H, W   = image.shape[:2]
     bar_h  = 40
     out    = np.zeros((H + bar_h, W, 3), dtype=np.uint8)
@@ -311,9 +233,6 @@ def add_info_bar(
     return out
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  SAVE CONTACT SHEET GRID
-# ══════════════════════════════════════════════════════════════════════════════
 
 def save_grid(
     results:    list[tuple],
@@ -322,7 +241,7 @@ def save_grid(
     cols:       int = 4,
     cell:       int = 220,
 ) -> None:
-    """Save all matching images as a contact-sheet grid with boxes drawn."""
+    #Save all matching images as a contact-sheet grid with boxes drawn
     rows = math.ceil(len(results) / cols)
     grid = np.zeros((rows * cell, cols * cell, 3), dtype=np.uint8)
     grid[:] = 20
@@ -333,16 +252,12 @@ def save_grid(
             continue
         img = draw_boxes(img, boxes, target_ids, show_all=False)
         img = cv2.resize(img, (cell, cell))
-
-        # Filename label at top
         cv2.rectangle(img, (0, 0), (cell, 16), (0, 0, 0), -1)
         cv2.putText(img, img_path.stem[:28], (3, 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 200, 200), 1)
 
         r, c = divmod(i, cols)
         grid[r * cell:(r + 1) * cell, c * cell:(c + 1) * cell] = img
-
-    # Header bar
     target_names = ", ".join(get_name(cid) for cid in sorted(target_ids))
     header = np.zeros((36, grid.shape[1], 3), dtype=np.uint8)
     header[:] = (40, 40, 40)
@@ -353,11 +268,6 @@ def save_grid(
     cv2.imwrite(str(out_path), final, [cv2.IMWRITE_JPEG_QUALITY, 94])
     print(f"\n  Saved contact sheet → {out_path}")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  INTERACTIVE VIEWER
-# ══════════════════════════════════════════════════════════════════════════════
-
 def run_viewer(
     results:    list[tuple],
     target_ids: set[int],
@@ -366,14 +276,12 @@ def run_viewer(
     if not results:
         print("  No images found for the requested class(es).")
         return
-
     WINDOW  = "F1 Class Viewer"
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW, 960, 600)
 
     idx      = 0
-    show_all = True   # toggle other-class boxes on/off
-
+    show_all = True 
     while True:
         img_path, _, boxes = results[idx]
         image    = cv2.imread(str(img_path))
@@ -388,16 +296,15 @@ def run_viewer(
 
         cv2.imshow(WINDOW, frame)
         key = cv2.waitKey(30) & 0xFF
-
         if key in (ord('q'), ord('Q'), 27):
             break
-        elif key in (ord(' '), 83, 3):      # SPACE / RIGHT
+        elif key in (ord(' '), 83, 3):  
             idx = (idx + 1) % len(results)
-        elif key in (81, 2):                 # LEFT
+        elif key in (81, 2):               
             idx = (idx - 1) % len(results)
-        elif key in (ord('a'), ord('A')):    # toggle all boxes
+        elif key in (ord('a'), ord('A')): 
             show_all = not show_all
-        elif key in (ord('s'), ord('S')):    # save current frame
+        elif key in (ord('s'), ord('S')): 
             save_dir.mkdir(parents=True, exist_ok=True)
             out = save_dir / f"annotated_{img_path.stem}.jpg"
             cv2.imwrite(str(out), frame)
@@ -407,11 +314,6 @@ def run_viewer(
             break
 
     cv2.destroyAllWindows()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  PRINT STATS
-# ══════════════════════════════════════════════════════════════════════════════
 
 def print_class_stats(dataset_dir: Path, split: str) -> None:
     """Print class distribution across the dataset."""
@@ -446,10 +348,6 @@ def print_class_stats(dataset_dir: Path, split: str) -> None:
         print(f"  {cls_id:<5} {name:<18} {count:>7} {pct:>6.1f}%  {bar}")
     print(f"  {'─'*52}\n")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  CLI
-# ══════════════════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser(
@@ -495,16 +393,12 @@ Examples:
         sys.exit(1)
 
     load_yaml_classes(dataset_dir)
-
-    # ── List classes mode ─────────────────────────────────────────────────────
     if args.list_classes:
         print_class_stats(dataset_dir, args.split)
         print("  All classes in schema:")
         for cid, name in sorted(CLASS_NAMES.items()):
             print(f"    {cid:>3}  {name}")
         return
-
-    # ── Resolve target class IDs ──────────────────────────────────────────────
     target_ids: set[int] = set()
     if args.class_names:
         target_ids.update(resolve_class_ids(args.class_names))
@@ -522,8 +416,6 @@ Examples:
 
     target_names = ", ".join(get_name(cid) for cid in sorted(target_ids))
     print(f"\n  Searching split='{args.split}' for class(es): {target_names}")
-
-    # ── Scan dataset ──────────────────────────────────────────────────────────
     results = find_images_with_classes(
         dataset_dir = dataset_dir,
         target_ids  = target_ids,
@@ -539,8 +431,6 @@ Examples:
     print(f"  Found {len(results)} image(s) containing: {target_names}\n")
 
     save_dir = Path(args.save_dir)
-
-    # ── Save grid or open interactive viewer ──────────────────────────────────
     if args.save:
         save_dir.mkdir(parents=True, exist_ok=True)
         safe_name  = target_names.replace(", ", "_").replace(" ", "_")

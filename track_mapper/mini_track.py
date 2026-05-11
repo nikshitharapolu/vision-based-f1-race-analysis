@@ -1,10 +1,9 @@
 """
-track_mapper/mini_track.py
-===========================
+
 Projects car centroids through the homography matrix onto a top-down
 circuit map and renders a mini-map overlay.
 
-Analogous to mini_court/ in abdullahtarek/tennis_analysis.
+Future scope
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ try:
 except ImportError:
     _CV2 = False
 
-# ── Circuit map configs ───────────────────────────────────────────────────────
+# Circuit map configs 
 
 CIRCUIT_MAPS: dict[str, dict] = {
     "silverstone": {
@@ -39,9 +38,8 @@ CIRCUIT_MAPS: dict[str, dict] = {
 }
 
 MINI_W, MINI_H  = 200, 200
-MINI_MARGIN     = 10   # px from bottom-left of frame
+MINI_MARGIN     = 10   
 
-# BGR colours per track_id mod 12
 _PALETTE = [
     (0,255,255),(0,140,255),(0,255,128),(255,0,128),(255,255,0),
     (128,0,255),(0,80,255),(255,80,0),(200,200,200),(128,255,128),
@@ -51,7 +49,7 @@ _PALETTE = [
 
 @dataclass
 class TrackCoord:
-    """Car position in top-down world coordinates (metres)."""
+    #Car position in top-down world coordinates (metres)
     track_id:  int
     frame_idx: int
     x:         float
@@ -78,10 +76,8 @@ class MiniTrack:
         self.kp_frames   = keypoints_per_frame or {}
         self.mini_w, self.mini_h = size
         self._bg         = self._build_bg() if _CV2 else None
-        # Populated by project_cars() — kept for draw_mini_map access
         self.car_positions: dict[int, list[TrackCoord]] = {}
 
-    # ── Projection ────────────────────────────────────────────────────────────
 
     def project_cars(
         self,
@@ -89,7 +85,7 @@ class MiniTrack:
     ) -> dict[int, list[TrackCoord]]:
         """
         Project every car centroid through the nearest homography.
-        Returns {track_id: [TrackCoord, ...]}.
+        return: {track_id: [TrackCoord, ...]}.
         """
         result: dict[int, list[TrackCoord]] = {}
         for fi, frame_dict in enumerate(car_tracks):
@@ -108,7 +104,7 @@ class MiniTrack:
         return result
 
     def is_in_pit_lane(self, coord: TrackCoord) -> bool:
-        """True if coord is within the pit-lane bounding strip."""
+        #True if coord is within the pit-lane bounding strip
         entry = self.map_cfg.get("pit_entry_line")
         exit_ = self.map_cfg.get("pit_exit_line")
         if not entry or not exit_:
@@ -119,7 +115,6 @@ class MiniTrack:
         max_x = max(entry[2], exit_[2]) + 2.0
         return min_x <= coord.x <= max_x and min_y <= coord.y <= max_y
 
-    # ── Rendering ─────────────────────────────────────────────────────────────
 
     def draw_mini_map(
         self,
@@ -128,7 +123,7 @@ class MiniTrack:
         car_speeds:      dict[int, list[float]] | None = None,
         frame_idx:       int = 0,
     ) -> np.ndarray:
-        """Render the mini-map and paste it into the bottom-left of frame."""
+        #Render the mini-map and pasting it into the bottom-left of frame
         if not _CV2 or self._bg is None:
             return frame
         mini = self._bg.copy()
@@ -139,7 +134,6 @@ class MiniTrack:
             label  = str(tid)
             cv2.putText(mini, label, (int(px)+5, int(py)-5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.28, col, 1)
-        # Paste into frame
         h, w = frame.shape[:2]
         x0   = MINI_MARGIN
         y0   = h - MINI_MARGIN - self.mini_h
@@ -151,14 +145,12 @@ class MiniTrack:
         self,
         frame_idx: int,
     ) -> dict[int, TrackCoord]:
-        """Return {track_id: TrackCoord} for all cars visible at frame_idx."""
         return {
             tid: next((c for c in coords if c.frame_idx == frame_idx), None)
             for tid, coords in self.car_positions.items()
             if any(c.frame_idx == frame_idx for c in coords)
         }
 
-    # ── Internal ──────────────────────────────────────────────────────────────
 
     def _get_H(self, frame_idx: int) -> np.ndarray | None:
         if not self.kp_frames:
