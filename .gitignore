@@ -2,7 +2,7 @@ roboflow_dataset/
 
 .Rapp.history
 .DS_Store
-config.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
