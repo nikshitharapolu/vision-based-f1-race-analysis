@@ -1,0 +1,48 @@
+F1 Race Analysis — Full Evaluation Report
+============================================================
+Generated : 2026-05-06 14:30:44
+Model     : models/car_detector.pt
+
+DETECTION METRICS
+  mAP@0.50        : 0.8368
+  mAP@0.50:0.95   : 0.6675
+  Precision       : 0.8771
+  Recall          : 0.8285
+  F1 Score        : 0.8521
+  Accuracy (est.) : 0.8708
+  Grade           : A — Production ready
+
+PER-CLASS METRICS
+  Class                    P       R      F1   AP@50
+  car                 0.8315  0.5488  0.6612  0.5675
+  RedBull             0.9803  0.9741  0.9772  0.9785
+  Mercedes            0.9405  0.9079  0.9239  0.9714
+  Ferrari             0.9632  0.9666  0.9649  0.9754
+  McLaren             0.9601  0.9578  0.9589  0.9779
+  Alpine              0.9543  0.9703  0.9622  0.9737
+  AstonMartin         0.9663  0.9641  0.9652  0.9630
+  Williams            0.9420  0.9304  0.9362  0.9454
+  Haas                0.9778  0.9557  0.9666  0.9903
+  KickSauber          0.9149  0.9780  0.9454  0.9917
+  RacingBulls         0.9091  0.7059  0.7947  0.9111
+  track_surface       0.8736  0.6919  0.7722  0.6867
+  crash               0.8760  0.7307  0.7968  0.7440
+  penalty_car         0.9346  0.8940  0.9138  0.9313
+  pitstop             1.0000  1.0000  1.0000  0.9950
+  marshal             0.9047  0.6364  0.7472  0.9650
+  yellow_flag         0.4363  1.0000  0.6075  0.4975
+  off_track           1.0000  0.5956  0.7466  0.7217
+  on_track            0.2991  0.3333  0.3153  0.1117
+
+PLOTS SAVED
+  plots/overall_metrics.png
+  plots/per_class_bars.png
+  plots/precision_recall_f1_grouped.png
+  plots/confusion_matrix.png
+  plots/class_distribution.png
+  plots/class_pie.png
+  plots/training_curves.png
+  plots/track_lengths.png
+  plots/class_consistency.png
+  plots/cars_per_frame.png
+  plots/processing_speed.png

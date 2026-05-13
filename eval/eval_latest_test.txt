@@ -1,0 +1,36 @@
+F1 Race Analysis — Evaluation Report
+Generated : 2026-05-04 19:14:00
+Model     : /content/drive/Shareddrives/682_project/vision-based-f1-race-analysis/models/car_detector.pt
+Dataset   : /content/roboflow_dataset/data.yaml  split=test
+Conf      : 0.25   IoU: 0.45
+
+OVERALL METRICS
+  mAP@0.50       : 0.8233
+  mAP@0.50:0.95  : 0.6598
+  Precision      : 0.8772
+  Recall         : 0.8289
+  F1 Score       : 0.8524
+  Accuracy (est) : 0.8709
+  Grade          : A — Production ready
+
+PER-CLASS METRICS
+  Class                 Prec  Recall      F1   AP@50  AP50:95
+  car                 0.8317  0.5495  0.6618  0.5408   0.4973
+  RedBull             0.9803  0.9741  0.9772  0.9785   0.8119
+  Mercedes            0.9405  0.9081  0.9240  0.9541   0.7989
+  Ferrari             0.9632  0.9667  0.9649  0.9662   0.8074
+  McLaren             0.9596  0.9582  0.9589  0.9688   0.8042
+  Alpine              0.9541  0.9703  0.9621  0.9646   0.8232
+  AstonMartin         0.9663  0.9645  0.9654  0.9630   0.8481
+  Williams            0.9419  0.9304  0.9361  0.9366   0.8358
+  Haas                0.9778  0.9560  0.9668  0.9717   0.8409
+  KickSauber          0.9151  0.9806  0.9467  0.9917   0.8824
+  RacingBulls         0.9085  0.7059  0.7945  0.8600   0.7191
+  track_surface       0.8737  0.6928  0.7728  0.6867   0.3506
+  crash               0.8760  0.7312  0.7971  0.7440   0.3733
+  penalty_car         0.9346  0.8943  0.9140  0.9313   0.7979
+  pitstop             1.0000  1.0000  1.0000  0.9950   0.9950
+  marshal             0.9038  0.6364  0.7469  0.9650   0.7082
+  yellow_flag         0.4053  1.0000  0.5768  0.4975   0.2487
+  off_track           1.0000  0.5977  0.7482  0.6150   0.3382
+  on_track            0.3333  0.3333  0.3333  0.1117   0.0558
